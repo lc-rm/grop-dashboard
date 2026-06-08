@@ -129,7 +129,7 @@ const RANGE_PRESETS = [
 const STAGE_COLORS = ['#0ea882','#22b58d','#3cc79b','#7dd3a8','#b6a04e','#d97706'];
 
 let DATA=null, charts=[];
-const state = { tab:'概要', preset:'all', from:null, to:null, monthSel:null, drillP:'office', drillS:'posting', drillExp:null };
+const state = { tab:'概要', preset:'all', from:null, to:null, monthSel:null, drillP:'office', drillS:'posting', drillExp:null, offSel:null };
 
 // ---------- helpers ----------
 const fmt = n => (n==null||isNaN(n))?'–':Math.round(n).toLocaleString('ja-JP');
@@ -359,8 +359,87 @@ function dimTable(arr,col1){
   return `<table>${head}<tbody>${body}</tbody></table>`;
 }
 function renderJob(){ renderDim('job','職種', 18); }
-function renderOffice(){ renderDim('office','オフィス／勤務地', 25); }
 function renderPosting(){ renderDim('posting','求人', 20); }
+
+// ---------- オフィス別（選択して詳細分析／複数で比較）----------
+function monthlySeries(rows){
+  const m=new Map();
+  rows.forEach(r=>{ if(!r.ym)return; (m.get(r.ym)||m.set(r.ym,[]).get(r.ym)).push(r); });
+  return [...m.keys()].sort().map(ym=>Object.assign({ym},funnelCount(m.get(ym))));
+}
+function renderOffice(){
+  if(!state.offSel) state.offSel=[];
+  const rows=applicantRows();
+  const all=aggBy(rows,'office');
+  const sel=state.offSel.filter(o=>all.some(a=>a.k===o));
+  state.offSel=sel;
+  const chips=sel.map(o=>`<span class="chip active" style="cursor:default">${o} <span data-rm="${encodeURIComponent(o)}" style="cursor:pointer;font-weight:800;margin-left:4px">×</span></span>`).join('');
+  const opts=['<option value="">＋ オフィスを追加…</option>'].concat(all.filter(a=>!sel.includes(a.k)).map(a=>`<option value="${encodeURIComponent(a.k)}">${a.k}（${a.applied}）</option>`)).join('');
+  const hint = sel.length===0?'オフィス名をクリック or 上で追加 → 詳細分析。複数選ぶと比較。':(sel.length===1?'単一オフィスの詳細分析（上で追加すると比較）':sel.length+'拠点を比較中');
+  const ctrl=`<div class="card" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <span style="font-weight:700">オフィス</span>
+    <select id="offAdd" class="msel" style="max-width:280px">${opts}</select>
+    ${chips}${sel.length?'<span class="chip" id="offClear" style="cursor:pointer">クリア</span>':''}
+    <span class="muted">${hint}</span></div>`;
+  const inner = sel.length===0?officeRanking(all):(sel.length===1?officeDetail(sel[0],rows):officeCompare(sel,rows));
+  document.getElementById('content').replaceChildren(el(`<div>${ctrl}${inner.html}</div>`));
+  const add=document.getElementById('offAdd'); if(add) add.onchange=e=>{ if(e.target.value){ state.offSel=[...sel,decodeURIComponent(e.target.value)]; render(); } };
+  const clr=document.getElementById('offClear'); if(clr) clr.onclick=()=>{ state.offSel=[]; render(); };
+  document.querySelectorAll('[data-rm]').forEach(x=>x.onclick=()=>{ state.offSel=sel.filter(o=>o!==decodeURIComponent(x.dataset.rm)); render(); });
+  document.querySelectorAll('[data-seloff]').forEach(tr=>tr.onclick=()=>{ state.offSel=[decodeURIComponent(tr.dataset.seloff)]; render(); });
+  if(inner.draw) inner.draw();
+}
+function officeRanking(all){
+  const top=all.slice(0,25);
+  const head=`<thead><tr><th>オフィス</th><th>応募</th><th>到着</th><th>①通過</th><th>①通過率</th><th>②通過</th><th>内定</th></tr></thead>`;
+  const body=all.slice(0,60).map(r=>`<tr class="clickable" data-seloff="${encodeURIComponent(r.k)}"><td>${r.k}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td><td>${fmt(r.pass1)}</td><td class="${rateClass(r.pass1/r.applied,.18,.08)}">${pct(r.pass1/r.applied)}</td><td>${fmt(r.pass2)}</td><td>${fmt(r.offer)}</td></tr>`).join('');
+  return {html:`<div class="card"><h2>オフィス別 応募数（上位25）<span class="hint">行クリックで詳細</span></h2><div class="chartwrap" style="height:${Math.max(260,top.length*22)}px"><canvas id="offBar"></canvas></div></div>
+    <div class="card"><h2>オフィス別 ファネル<span class="hint">行クリックで深掘り</span></h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>`,
+    draw:()=>{ charts.push(new Chart(document.getElementById('offBar'),{type:'bar',data:{labels:top.map(r=>r.k),datasets:[{label:'応募',data:top.map(r=>r.applied),backgroundColor:'#cfeee3'},{label:'①通過',data:top.map(r=>r.pass1),backgroundColor:'#0e9c74'}]},options:Object.assign(baseOpt(),{indexAxis:'y',scales:{y:{ticks:{autoSkip:false,font:{size:11}}}}})})); } };
+}
+function officeDetail(office,rows){
+  const r=rows.filter(x=>x.office===office), c=funnelCount(r), ms=monthlySeries(r);
+  const jobs=aggBy(r,'job'), posts=aggBy(r,'posting');
+  const order=['10代','20代','30代','40代','50代','60代','70代'];
+  const ages=aggBy(r.filter(x=>x.age),'age').sort((a,b)=>order.indexOf(a.k)-order.indexOf(b.k));
+  const kpis=`<div class="kpis">
+    ${kpiCard('応募数',fmt(c.applied),office)}
+    ${kpiCard('書類到着',fmt(c.arrived),'到着率 '+pct(c.arrived/c.applied))}
+    ${kpiCard('書類①通過',fmt(c.pass1),'通過率 '+pct(c.pass1/c.applied))}
+    ${kpiCard('書類②通過',fmt(c.pass2),'')}
+    ${kpiCard('内定',fmt(c.offer),'内定率 '+pct(c.offer/c.applied))}</div>`;
+  return {html:`${kpis}
+    <div class="card"><h2>${office} の選考ファネル</h2><div id="offFunnel" class="funnel"></div></div>
+    <div class="card"><h2>月別 応募・①通過 推移</h2><div class="chartwrap"><canvas id="offTrend"></canvas></div></div>
+    <div class="two">
+      <div class="card"><h2>職種別 応募（上位10）</h2><div class="chartwrap"><canvas id="offJob"></canvas></div></div>
+      <div class="card"><h2>年代別 応募</h2><div class="chartwrap"><canvas id="offAge"></canvas></div></div></div>
+    <div class="card"><h2>求人別 ファネル</h2><div style="overflow-x:auto">${dimTable(posts.slice(0,40),'求人')}</div></div>
+    <div class="card"><h2>職種別 ファネル</h2><div style="overflow-x:auto">${dimTable(jobs.slice(0,40),'職種')}</div></div>`,
+    draw:()=>{
+      drawFunnel('offFunnel',[['応募',c.applied],['書類到着',c.arrived],['書類①通過',c.pass1],['書類②通過',c.pass2],['内定',c.offer]]);
+      charts.push(new Chart(document.getElementById('offTrend'),{type:'bar',data:{labels:ms.map(m=>ymLabel(m.ym)),datasets:[{label:'応募',data:ms.map(m=>m.applied),backgroundColor:'#cfeee3'},{label:'①通過',data:ms.map(m=>m.pass1),backgroundColor:'#0e9c74'}]},options:baseOpt()}));
+      const jb=jobs.slice(0,10);
+      charts.push(new Chart(document.getElementById('offJob'),{type:'bar',data:{labels:jb.map(r=>r.k),datasets:[{label:'応募',data:jb.map(r=>r.applied),backgroundColor:'#6cc6a3'}]},options:Object.assign(baseOpt(),{indexAxis:'y',plugins:{legend:{display:false}},scales:{y:{ticks:{autoSkip:false,font:{size:11}}}}})}));
+      charts.push(new Chart(document.getElementById('offAge'),{type:'doughnut',data:{labels:ages.map(r=>r.k),datasets:[{data:ages.map(r=>r.applied),backgroundColor:['#b7e4cf','#6cc6a3','#0e9c74','#3fa3d9','#b6883a','#d97706','#9ca3af']}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right'}}}})); } };
+}
+function officeCompare(sel,rows){
+  const data=sel.map(o=>{ const r=rows.filter(x=>x.office===o); return {k:o,c:funnelCount(r),ms:monthlySeries(r)}; });
+  const head=`<thead><tr><th>オフィス</th><th>応募</th><th>到着</th><th>到着率</th><th>①通過</th><th>①通過率</th><th>②通過</th><th>内定</th><th>内定率</th></tr></thead>`;
+  const body=data.map(d=>`<tr><td>${d.k}</td><td>${fmt(d.c.applied)}</td><td>${fmt(d.c.arrived)}</td><td>${pct(d.c.arrived/d.c.applied)}</td><td>${fmt(d.c.pass1)}</td><td class="${rateClass(d.c.pass1/d.c.applied,.18,.08)}">${pct(d.c.pass1/d.c.applied)}</td><td>${fmt(d.c.pass2)}</td><td>${fmt(d.c.offer)}</td><td>${pct(d.c.offer/d.c.applied)}</td></tr>`).join('');
+  const ys=[...new Set(data.flatMap(d=>d.ms.map(m=>m.ym)))].sort();
+  const PAL=['#0e9c74','#3fa3d9','#b6883a','#d97706','#9c6ade','#e85d75','#2bb0a3','#8aa029'];
+  return {html:`<div class="card"><h2>比較：応募数 と 到着率・①通過率</h2><div class="chartwrap"><canvas id="cmpBar"></canvas></div></div>
+    <div class="card"><h2>月別 応募数の比較</h2><div class="chartwrap"><canvas id="cmpTrend"></canvas></div></div>
+    <div class="card"><h2>比較テーブル</h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>`,
+    draw:()=>{
+      charts.push(new Chart(document.getElementById('cmpBar'),{data:{labels:data.map(d=>d.k),datasets:[
+        {type:'bar',label:'応募',data:data.map(d=>d.c.applied),backgroundColor:'#cfeee3',yAxisID:'y'},
+        {type:'line',label:'到着率%',data:data.map(d=>d.c.applied?d.c.arrived/d.c.applied*100:0),borderColor:'#3fa3d9',yAxisID:'y1'},
+        {type:'line',label:'①通過率%',data:data.map(d=>d.c.applied?d.c.pass1/d.c.applied*100:0),borderColor:'#0e9c74',yAxisID:'y1'}]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}},scales:{y:{position:'left',beginAtZero:true},y1:{position:'right',beginAtZero:true,grid:{display:false},ticks:{callback:v=>v+'%'}}}}}));
+      charts.push(new Chart(document.getElementById('cmpTrend'),{type:'line',data:{labels:ys.map(ymLabel),datasets:data.map((d,i)=>{ const mp=new Map(d.ms.map(m=>[m.ym,m.applied])); return {label:d.k,data:ys.map(y=>mp.get(y)||0),borderColor:PAL[i%PAL.length],backgroundColor:'transparent',tension:.3}; })},options:baseOpt()})); } };
+}
 function renderDim(key,title,topN){
   const arr=aggBy(applicantRows(),key);
   const top=arr.slice(0,topN);
