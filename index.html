@@ -28,6 +28,7 @@
   .ctl-label{font-size:11px;color:var(--sub);margin-right:2px}
   .chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 12px;font-size:12px;cursor:pointer;color:#374151}
   .chip.active{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+  .msel{border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:12px;color:#374151;background:#fff;cursor:pointer}
   .tabs{display:flex;gap:4px;padding:0 16px;background:#fff;border-bottom:1px solid var(--line);overflow-x:auto;position:sticky;top:101px;z-index:14}
   .tab{padding:11px 16px;font-size:13px;cursor:pointer;color:var(--sub);border-bottom:3px solid transparent;white-space:nowrap}
   .tab.active{color:var(--brand);border-bottom-color:var(--brand);font-weight:700}
@@ -116,19 +117,18 @@
 </main>
 
 <script>
-const TABS = ['概要','書類通過','媒体比較','職種別','オフィス別','年代別','広告コスト'];
-// 集計済みファネルが始まる202406を基準にした期間プリセット
-const PERIODS = [
-  {key:'all',   label:'全期間'},
-  {key:'12m',   label:'直近12ヶ月'},
-  {key:'2026',  label:'2026年'},
-  {key:'2025',  label:'2025年'},
-  {key:'2024',  label:'2024年'},
+const TABS = ['概要','書類通過','月別','媒体比較','職種別','オフィス別','年代別','広告コスト'];
+const RANGE_PRESETS = [
+  {key:'cur', label:'当月'},
+  {key:'all', label:'全期間'},
+  {key:'12m', label:'直近12ヶ月'},
+  {key:'6m',  label:'直近6ヶ月'},
+  {key:'3m',  label:'直近3ヶ月'},
 ];
 const STAGE_COLORS = ['#0ea882','#22b58d','#3cc79b','#7dd3a8','#b6a04e','#d97706'];
 
 let DATA=null, charts=[];
-const state = { tab:'概要', period:'all' };
+const state = { tab:'概要', preset:'all', from:null, to:null, monthSel:null };
 
 // ---------- helpers ----------
 const fmt = n => (n==null||isNaN(n))?'–':Math.round(n).toLocaleString('ja-JP');
@@ -139,22 +139,25 @@ function rateClass(r, good, bad){ if(r==null) return ''; if(r>=good) return 'rat
 function destroyCharts(){ charts.forEach(c=>{try{c.destroy()}catch(e){}}); charts=[]; }
 function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
 
-// 期間でファネル月を絞る
-function funnelRows(){
-  const f = DATA.funnel;
-  if(state.period==='all') return f;
-  if(state.period==='12m') return f.slice(-12);
-  return f.filter(r=>r.ym.slice(0,4)===state.period);
+// 期間（開始月〜終了月）で絞る
+function allYms(){
+  const s=new Set();
+  (DATA.funnel||[]).forEach(r=>s.add(r.ym));
+  (DATA.cost||[]).forEach(r=>r.ym&&s.add(r.ym));
+  return [...s].sort();
 }
-function applicantRows(){
-  const a = DATA.applicants;
-  if(state.period==='all') return a;
-  if(state.period==='12m'){
-    const yms = new Set(DATA.funnel.slice(-12).map(r=>r.ym));
-    return a.filter(r=>yms.has(r.ym));
-  }
-  return a.filter(r=>r.ym && r.ym.slice(0,4)===state.period);
+function setPreset(key){
+  const ys=allYms(); if(!ys.length) return;
+  state.preset=key;
+  if(key==='all'){ state.from=ys[0]; state.to=ys[ys.length-1]; return; }
+  if(key==='cur'){ state.from=ys[ys.length-1]; state.to=ys[ys.length-1]; return; }
+  const n={'12m':12,'6m':6,'3m':3}[key]||ys.length;
+  const sub=ys.slice(-n); state.from=sub[0]; state.to=ys[ys.length-1];
 }
+function inRange(ym){ return ym && state.from && ym>=state.from && ym<=state.to; }
+function funnelRows(){ return DATA.funnel.filter(r=>inRange(r.ym)); }
+function applicantRows(){ return DATA.applicants.filter(r=>inRange(r.ym)); }
+function costRows(){ return (DATA.cost||[]).filter(r=>inRange(r.ym)); }
 function sumF(rows, k){ return rows.reduce((s,r)=>s+(r[k]||0),0); }
 
 // ---------- KPI ----------
@@ -265,6 +268,57 @@ function funnelTable(rows,t){
   return `<table>${head}<tbody>${body}${total}</tbody></table>`;
 }
 
+// ---------- 月別（単月深掘り）----------
+function renderMonth(){
+  const ys=DATA.funnel.map(r=>r.ym);
+  if(!state.monthSel || ys.indexOf(state.monthSel)<0) state.monthSel=ys[ys.length-1];
+  const ym=state.monthSel;
+  const fr=DATA.funnel.find(r=>r.ym===ym)||{};
+  const apps=DATA.applicants.filter(r=>r.ym===ym);
+  const opts=ys.slice().reverse().map(y=>`<option value="${y}" ${y===ym?'selected':''}>${ymLabel(y)}</option>`).join('');
+  const kpis=`<div class="kpis">
+    ${kpiCard('応募数',fmt(fr.applied),'')}
+    ${kpiCard('書類到着',fmt(fr.arrived),'到着率 '+pct(fr.arrRate))}
+    ${kpiCard('書類①通過',fmt(fr.pass1),'通過率 '+pct(fr.p1Rate))}
+    ${kpiCard('書類②通過',fmt(fr.pass2),'対①通過 '+pct(fr.pass1?fr.pass2/fr.pass1:null))}
+    ${kpiCard('内定',fmt(fr.offer),'内定率 '+pct(fr.offerRate))}
+    ${kpiCard('承諾',fmt(fr.accept),'')}
+  </div>`;
+  const c=el(`<div>
+    <div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span style="font-weight:700">対象月</span>
+      <select id="monthSel" class="msel">${opts}</select>
+      <span class="muted">この月の応募〜選考を深掘り（上部の期間指定とは独立）</span>
+    </div>
+    ${kpis}
+    <div class="card"><h2>${ymLabel(ym)} の選考ファネル</h2><div id="moFunnel" class="funnel"></div></div>
+    <div class="card"><h2>月別推移の中での位置づけ<span class="hint">応募・①通過（選択月をハイライト）</span></h2><div class="chartwrap"><canvas id="moTrend"></canvas></div></div>
+    <div class="two">
+      <div class="card"><h2>${ymLabel(ym)} 職種別 応募（上位10）</h2><div class="chartwrap" style="height:${Math.max(220,Math.min(10,aggBy(apps,'job').length)*26+60)}px"><canvas id="moJob"></canvas></div></div>
+      <div class="card"><h2>${ymLabel(ym)} 年代別 応募</h2><div class="chartwrap"><canvas id="moAge"></canvas></div></div>
+    </div>
+    <div class="card"><h2>${ymLabel(ym)} オフィス／勤務地別 ファネル</h2><div style="overflow-x:auto">${dimTable(aggBy(apps,'office').slice(0,30),'オフィス／勤務地')}</div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  document.getElementById('monthSel').onchange=e=>{ state.monthSel=e.target.value; render(); };
+  drawFunnel('moFunnel',[['応募',fr.applied||0],['書類到着',fr.arrived||0],['書類①通過',fr.pass1||0],['書類②通過',fr.pass2||0],['内定',fr.offer||0],['承諾',fr.accept||0]]);
+  const labels=DATA.funnel.map(r=>ymLabel(r.ym));
+  charts.push(new Chart(document.getElementById('moTrend'),{type:'bar',
+    data:{labels,datasets:[
+      {label:'応募',data:DATA.funnel.map(r=>r.applied),backgroundColor:DATA.funnel.map(r=>r.ym===ym?'#0e9c74':'#dcebe5')},
+      {label:'書類①通過',data:DATA.funnel.map(r=>r.pass1),backgroundColor:DATA.funnel.map(r=>r.ym===ym?'#b6883a':'#ece3cd')},
+    ]},options:baseOpt()}));
+  const jb=aggBy(apps,'job').slice(0,10);
+  charts.push(new Chart(document.getElementById('moJob'),{type:'bar',
+    data:{labels:jb.map(r=>r.k),datasets:[{label:'応募',data:jb.map(r=>r.applied),backgroundColor:'#6cc6a3'}]},
+    options:Object.assign(baseOpt(),{indexAxis:'y',plugins:{legend:{display:false}},scales:{y:{ticks:{autoSkip:false,font:{size:11}}}}})}));
+  const order=['10代','20代','30代','40代','50代','60代','70代'];
+  const ab=aggBy(apps.filter(r=>r.age),'age').sort((a,b)=>order.indexOf(a.k)-order.indexOf(b.k));
+  charts.push(new Chart(document.getElementById('moAge'),{type:'doughnut',
+    data:{labels:ab.map(r=>r.k),datasets:[{data:ab.map(r=>r.applied),backgroundColor:['#b7e4cf','#6cc6a3','#0e9c74','#3fa3d9','#b6883a','#d97706','#9ca3af']}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right'}}}}));
+}
+
 // ---------- 媒体比較 ----------
 function renderMedia(){
   const m=DATA.media;
@@ -346,31 +400,38 @@ function renderAge(){
 
 // ---------- 広告コスト ----------
 function renderCost(){
-  const c0=DATA.cost;
-  const note=`<div class="note">広告コストは「各数字データ」シートに記録のある <b>${c0.length?ymLabel(c0[0].ym)+'〜'+ymLabel(c0[c0.length-1].ym):'–'}</b> 期間のみ（月額固定運用期）。
-    現在の運用型（クリック課金）の月次コストはこのファイルに含まれていません。</div>`;
-  const tspend=c0.reduce((s,r)=>s+(r.spend||0),0), toffer=c0.reduce((s,r)=>s+(r.offer||0),0), tapplied=c0.reduce((s,r)=>s+(r.applied||0),0);
+  const c0=costRows();
+  const note=`<div class="note">Indeed管理画面ベースの月別 <b>予算・消化額(COST)・応募(CV)・CPA</b>（「indeedデータ」シート）。上部の期間指定に連動します。
+    ※ 応募(CV)＝Indeed上の応募完了数で、書類通過タブの「応募者数」とは集計元が異なります。</div>`;
+  const tbud=c0.reduce((s,r)=>s+(r.budget||0),0), tcost=c0.reduce((s,r)=>s+(r.cost||0),0), tcv=c0.reduce((s,r)=>s+(r.cv||0),0);
   const kpis=`<div class="kpis">
-    ${kpiCard('累計コスト',yen(tspend),'記録のある期間')}
-    ${kpiCard('応募単価',tapplied?yen(tspend/tapplied):'–','コスト/応募')}
-    ${kpiCard('内定',fmt(toffer),'記録期間内')}
+    ${kpiCard('予算',yen(tbud),'選択期間の合計')}
+    ${kpiCard('消化額',yen(tcost),'消化率 '+pct(tbud?tcost/tbud:null))}
+    ${kpiCard('応募数(CV)',fmt(tcv),'Indeed応募完了')}
+    ${kpiCard('平均CPA',tcv?yen(tcost/tcv):'–','消化額/応募')}
   </div>`;
-  const head=`<thead><tr><th>月</th><th>応募</th><th>到着</th><th>到着率</th><th>通過</th><th>通過率</th><th>一次</th><th>内定</th><th>利用金額</th><th>応募単価</th></tr></thead>`;
-  const body=c0.map(r=>`<tr><td>${ymLabel(r.ym)}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td>
-    <td>${pct(r.arrRate)}</td><td>${fmt(r.pass)}</td><td>${pct(r.passRate)}</td><td>${fmt(r.first)}</td>
-    <td>${fmt(r.offer)}</td><td>${r.spend?yen(r.spend):'–'}</td><td>${r.spend&&r.applied?yen(r.spend/r.applied):'–'}</td></tr>`).join('');
+  const head=`<thead><tr><th>月</th><th>予算</th><th>消化額</th><th>消化率</th><th>表示</th><th>クリック</th><th>CTR</th><th>応募開始</th><th>応募(CV)</th><th>CPC</th><th>CPA</th></tr></thead>`;
+  const body=c0.map(r=>`<tr><td>${ymLabel(r.ym)}</td><td>${yen(r.budget)}</td><td>${yen(r.cost)}</td>
+    <td>${pct(r.budget?r.cost/r.budget:null)}</td><td>${fmt(r.imp)}</td><td>${fmt(r.click)}</td>
+    <td>${pct(r.ctr)}</td><td>${fmt(r.applyStart)}</td><td>${fmt(r.cv)}</td>
+    <td>${r.cpc?yen(r.cpc):'–'}</td><td class="${r.cpa&&r.cpa<3000?'rate-good':(r.cpa&&r.cpa>8000?'rate-bad':'')}">${r.cpa?yen(r.cpa):'–'}</td></tr>`).join('');
   const c=el(`<div>${note}${kpis}
-    <div class="card"><h2>月別 利用金額と応募数</h2><div class="chartwrap"><canvas id="costChart"></canvas></div></div>
-    <div class="card"><h2>月別 コスト・ファネル</h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>
+    <div class="card"><h2>予算 vs 消化額 と 応募数(CV)</h2><div class="chartwrap"><canvas id="costChart"></canvas></div></div>
+    <div class="card"><h2>CPA（応募単価）の推移<span class="hint">低いほど効率が良い</span></h2><div class="chartwrap"><canvas id="cpaChart"></canvas></div></div>
+    <div class="card"><h2>月別 広告パフォーマンス</h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>
   </div>`);
   document.getElementById('content').replaceChildren(c);
   const labels=c0.map(r=>ymLabel(r.ym));
   charts.push(new Chart(document.getElementById('costChart'),{
     data:{labels,datasets:[
-      {type:'bar',label:'利用金額',data:c0.map(r=>r.spend||null),backgroundColor:'#cfeee3',yAxisID:'y'},
-      {type:'line',label:'応募数',data:c0.map(r=>r.applied),borderColor:'#0e9c74',yAxisID:'y1',tension:.3},
+      {type:'bar',label:'予算',data:c0.map(r=>r.budget),backgroundColor:'#e2efe9',yAxisID:'y'},
+      {type:'bar',label:'消化額',data:c0.map(r=>r.cost),backgroundColor:'#6cc6a3',yAxisID:'y'},
+      {type:'line',label:'応募数(CV)',data:c0.map(r=>r.cv),borderColor:'#b6883a',yAxisID:'y1',tension:.3},
     ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}},
-      scales:{y:{position:'left',ticks:{callback:v=>'¥'+(v/10000)+'万'}},y1:{position:'right',grid:{display:false}}}}}));
+      scales:{y:{position:'left',ticks:{callback:v=>'¥'+(v/10000)+'万'}},y1:{position:'right',grid:{display:false},beginAtZero:true}}}}));
+  charts.push(new Chart(document.getElementById('cpaChart'),{type:'line',
+    data:{labels,datasets:[{label:'CPA',data:c0.map(r=>r.cpa?Math.round(r.cpa):null),borderColor:'#0e9c74',backgroundColor:'rgba(14,156,116,.08)',fill:true,tension:.3}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{callback:v=>'¥'+fmt(v)}}}}}));
 }
 
 // ---------- chart base ----------
@@ -391,19 +452,29 @@ function renderTabs(){
   }));
 }
 function renderPeriods(){
+  const ys=allYms();
   const p=document.getElementById('periodChips');
-  p.replaceChildren(...PERIODS.map(o=>{
-    const d=el(`<span class="chip ${o.key===state.period?'active':''}">${o.label}</span>`);
-    d.onclick=()=>{ state.period=o.key; renderPeriods(); render(); };
-    return d;
-  }));
+  const chips=RANGE_PRESETS.map(o=>`<span class="chip ${o.key===state.preset?'active':''}" data-k="${o.key}">${o.label}</span>`).join('');
+  const opts=ys.map(y=>`<option value="${y}">${ymLabel(y)}</option>`).join('');
+  p.innerHTML = chips +
+    `<span class="ctl-label" style="margin-left:8px">期間指定</span>`+
+    `<select id="fromSel" class="msel">${opts}</select>`+
+    `<span class="muted">〜</span>`+
+    `<select id="toSel" class="msel">${opts}</select>`;
+  document.getElementById('fromSel').value=state.from;
+  document.getElementById('toSel').value=state.to;
+  p.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{ setPreset(c.dataset.k); renderPeriods(); render(); });
+  document.getElementById('fromSel').onchange=e=>{ state.from=e.target.value; if(state.from>state.to)state.to=state.from; state.preset=''; renderPeriods(); render(); };
+  document.getElementById('toSel').onchange=e=>{ state.to=e.target.value; if(state.to<state.from)state.from=state.to; state.preset=''; renderPeriods(); render(); };
 }
 function render(){
   destroyCharts();
-  const r=funnelRows();
+  const r=(state.tab==='広告コスト')?costRows():funnelRows();
   document.getElementById('scopeNote').textContent =
-    r.length? `対象: ${ymLabel(r[0].ym)}〜${ymLabel(r[r.length-1].ym)}（${r.length}ヶ月）` : '';
-  ({'概要':renderOverview,'書類通過':renderFunnel,'媒体比較':renderMedia,
+    (state.tab==='月別') ? '（月別タブは下の「対象月」で切替）' :
+    (state.tab==='媒体比較') ? '（媒体比較は累計値・期間指定の対象外）' :
+    r.length? `対象: ${ymLabel(r[0].ym)}〜${ymLabel(r[r.length-1].ym)}（${r.length}ヶ月）` : '該当データなし';
+  ({'概要':renderOverview,'書類通過':renderFunnel,'月別':renderMonth,'媒体比較':renderMedia,
     '職種別':renderJob,'オフィス別':renderOffice,'年代別':renderAge,'広告コスト':renderCost}[state.tab])();
 }
 
@@ -414,6 +485,8 @@ async function load(){
   DATA=await res.json();
   const lf=DATA.meta&&DATA.meta.latestFunnelYm;
   document.getElementById('updated').textContent='最新データ: '+(lf?ymLabel(lf):'—');
+  setPreset('all');
+  state.monthSel=allYms().slice(-1)[0]||null;
   renderPeriods(); renderTabs(); render();
 }
 document.getElementById('refreshBtn').onclick=async()=>{
