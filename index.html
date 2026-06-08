@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GROP（本社） 採用分析ダッシュボード</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="%2310b981"/><stop offset="1" stop-color="%2334d399"/></linearGradient></defs><rect width="100" height="100" rx="26" fill="url(%23g)"/><text x="50" y="66" font-size="46" font-family="Arial" font-weight="bold" fill="white" text-anchor="middle">G</text></svg>'>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<style>
+  :root{
+    --bg:#f0faf6; --card:#fff; --ink:#16302a; --sub:#5f7d74; --line:#d8ece4;
+    --brand:#10b981; --good:#059669; --warn:#d97706; --bad:#e11d48; --accent:#0d9488;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;background:var(--bg);color:var(--ink)}
+  header{background:linear-gradient(135deg,#0ea882,#34d399);color:#fff;padding:14px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:sticky;top:0;z-index:20}
+  header h1{font-size:17px;margin:0;font-weight:700;letter-spacing:.02em}
+  header .powered{font-size:11px;color:#d1fae5}
+  .updated{font-size:12px;color:#ecfdf5;margin-left:auto}
+  #refreshBtn{background:#fff;color:#0d9488;border:0;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:800;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+  #refreshBtn:active{transform:translateY(1px)}
+  #logoutBtn{background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.55);border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer}
+  #logoutBtn:hover{background:rgba(255,255,255,.28)}
+  .controls{background:#fff;border-bottom:1px solid var(--line);padding:10px 20px;display:flex;gap:18px;flex-wrap:wrap;align-items:center;position:sticky;top:50px;z-index:15}
+  .ctl-group{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .ctl-label{font-size:11px;color:var(--sub);margin-right:2px}
+  .chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 12px;font-size:12px;cursor:pointer;color:#374151}
+  .chip.active{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+  .tabs{display:flex;gap:4px;padding:0 16px;background:#fff;border-bottom:1px solid var(--line);overflow-x:auto;position:sticky;top:101px;z-index:14}
+  .tab{padding:11px 16px;font-size:13px;cursor:pointer;color:var(--sub);border-bottom:3px solid transparent;white-space:nowrap}
+  .tab.active{color:var(--brand);border-bottom-color:var(--brand);font-weight:700}
+  main{padding:18px 20px 60px;max-width:1180px;margin:0 auto}
+  .panel{display:none}
+  .panel.active{display:block}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .kpi .label{font-size:12px;color:var(--sub)}
+  .kpi .value{font-size:21px;font-weight:800;margin-top:4px;white-space:nowrap;letter-spacing:-.03em}
+  .kpi .sub{font-size:11px;color:var(--sub);margin-top:2px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:18px}
+  .card h2{font-size:14px;margin:0 0 12px;font-weight:700}
+  .card h2 .hint{font-size:11px;color:var(--sub);font-weight:400;margin-left:8px}
+  table{border-collapse:collapse;width:100%;font-size:12.5px}
+  th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  thead th{background:#f9fafb;color:#374151;font-weight:700}
+  tbody tr:hover{background:#f8fafc}
+  tr.total{font-weight:800;background:#f1f5f9}
+  .rate-good{color:var(--good);font-weight:700}
+  .rate-bad{color:var(--bad);font-weight:700}
+  .chartwrap{position:relative;height:300px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:760px){.two{grid-template-columns:1fr}}
+  .muted{color:var(--sub);font-size:12px}
+  .note{background:#f1f6f4;border:1px solid var(--line);border-radius:10px;padding:10px 13px;font-size:12px;color:#4b6b62;margin-bottom:16px}
+  .note b{color:var(--ink)}
+  .loading{padding:60px;text-align:center;color:var(--sub)}
+  /* funnel */
+  .funnel{display:flex;flex-direction:column;gap:7px}
+  .fstage{display:grid;grid-template-columns:118px 1fr;align-items:center;gap:12px}
+  .fstage .fname{font-size:12.5px;color:#374151;text-align:right;font-weight:600}
+  .fbarwrap{position:relative;background:#f1f5f4;border-radius:8px;height:34px;overflow:hidden}
+  .fbar{height:100%;border-radius:8px;display:flex;align-items:center;padding-left:12px;color:#fff;font-size:12.5px;font-weight:700;white-space:nowrap;min-width:fit-content}
+  .fconv{font-size:11px;color:var(--sub);margin-left:8px}
+  #authGate{position:fixed;inset:0;background:#fcfdfc;display:flex;align-items:center;justify-content:center;z-index:9999;padding:24px;overflow:hidden}
+  #authGate::before{content:"";position:absolute;width:560px;height:560px;border-radius:50%;background:radial-gradient(circle,rgba(16,185,129,.07),transparent 70%);top:-240px;right:-170px}
+  #authGate::after{content:"";position:absolute;width:460px;height:460px;border-radius:50%;background:radial-gradient(circle,rgba(52,211,153,.06),transparent 70%);bottom:-220px;left:-170px}
+  .auth-card{position:relative;width:100%;max-width:344px;text-align:left}
+  .auth-logo-mark{width:54px;height:54px;border-radius:16px;background:linear-gradient(135deg,#10b981,#34d399);display:flex;align-items:center;justify-content:center;margin:0 0 30px;box-shadow:0 12px 26px rgba(16,185,129,.30);color:#fff;font-size:30px;font-weight:800}
+  .auth-title{font-size:27px;font-weight:800;color:#16241f;letter-spacing:-.01em;line-height:1.32}
+  .auth-tag{font-size:12.5px;color:#9aa8a1;margin-top:12px;line-height:1.6}
+  .auth-divider{height:1px;background:#eef1f0;margin:30px 0 24px}
+  .auth-lock{display:inline-flex;align-items:center;gap:6px;background:#f1f6f4;color:#5d7068;border-radius:999px;padding:6px 13px;font-size:11px;font-weight:700;margin-top:18px}
+  #loginBtn{display:flex;align-items:center;justify-content:center;gap:11px;background:#fff;color:#3c4043;border:1px solid #e5e9e7;border-radius:13px;padding:14px 18px;font-size:14.5px;font-weight:700;cursor:pointer;width:100%;transition:box-shadow .15s,border-color .15s,transform .05s}
+  #loginBtn:hover{border-color:#cbd5d0;box-shadow:0 6px 18px rgba(16,185,129,.12)}
+  #loginBtn:active{transform:translateY(1px)}
+  .auth-error{font-size:12.5px;color:#e11d48;margin-top:14px;min-height:1em}
+  .auth-foot{position:absolute;bottom:20px;left:0;right:0;text-align:center;color:#c3cdc8;font-size:11px;letter-spacing:.06em}
+</style>
+</head>
+<body>
+<div id="authGate">
+  <div class="auth-card">
+    <div class="auth-logo-mark">G</div>
+    <div class="auth-title">GROP（本社）<br>採用分析</div>
+    <div class="auth-tag">Indeed応募〜書類通過〜内定のファネル分析</div>
+    <div class="auth-divider"></div>
+    <button id="loginBtn">
+      <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      Google でログイン
+    </button>
+    <span class="auth-lock">🔒 社内（@link-core.co.jp）限定</span>
+    <p id="authError" class="auth-error"></p>
+  </div>
+  <div class="auth-foot">Powered by Link Core</div>
+</div>
+<header>
+  <h1>GROP（本社） 採用分析ダッシュボード</h1>
+  <span class="powered">Powered by Link Core</span>
+  <span class="updated" id="updated"></span>
+  <button id="refreshBtn">最新情報へ更新</button>
+  <button id="logoutBtn" title="ログアウト">ログアウト</button>
+</header>
+
+<div class="controls">
+  <div class="ctl-group"><span class="ctl-label">期間</span><span id="periodChips"></span></div>
+  <span class="muted" id="scopeNote"></span>
+</div>
+
+<div class="tabs" id="tabs"></div>
+
+<main>
+  <div id="content" class="loading">データを読み込み中…</div>
+</main>
+
+<script>
+const TABS = ['概要','書類通過','媒体比較','職種別','オフィス別','年代別','広告コスト'];
+// 集計済みファネルが始まる202406を基準にした期間プリセット
+const PERIODS = [
+  {key:'all',   label:'全期間'},
+  {key:'12m',   label:'直近12ヶ月'},
+  {key:'2026',  label:'2026年'},
+  {key:'2025',  label:'2025年'},
+  {key:'2024',  label:'2024年'},
+];
+const STAGE_COLORS = ['#0ea882','#22b58d','#3cc79b','#7dd3a8','#b6a04e','#d97706'];
+
+let DATA=null, charts=[];
+const state = { tab:'概要', period:'all' };
+
+// ---------- helpers ----------
+const fmt = n => (n==null||isNaN(n))?'–':Math.round(n).toLocaleString('ja-JP');
+const yen = n => (n==null||isNaN(n))?'–':'¥'+Math.round(n).toLocaleString('ja-JP');
+const pct = r => (r==null||isNaN(r))?'–':(r*100).toFixed(1)+'%';
+const ymLabel = ym => ym ? ym.slice(0,4)+'/'+ym.slice(4,6) : '';
+function rateClass(r, good, bad){ if(r==null) return ''; if(r>=good) return 'rate-good'; if(r<bad) return 'rate-bad'; return ''; }
+function destroyCharts(){ charts.forEach(c=>{try{c.destroy()}catch(e){}}); charts=[]; }
+function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
+
+// 期間でファネル月を絞る
+function funnelRows(){
+  const f = DATA.funnel;
+  if(state.period==='all') return f;
+  if(state.period==='12m') return f.slice(-12);
+  return f.filter(r=>r.ym.slice(0,4)===state.period);
+}
+function applicantRows(){
+  const a = DATA.applicants;
+  if(state.period==='all') return a;
+  if(state.period==='12m'){
+    const yms = new Set(DATA.funnel.slice(-12).map(r=>r.ym));
+    return a.filter(r=>yms.has(r.ym));
+  }
+  return a.filter(r=>r.ym && r.ym.slice(0,4)===state.period);
+}
+function sumF(rows, k){ return rows.reduce((s,r)=>s+(r[k]||0),0); }
+
+// ---------- KPI ----------
+function kpiCard(label,value,sub){ return `<div class="kpi"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub||''}</div></div>`; }
+
+// ---------- 概要 ----------
+function renderOverview(){
+  const rows=funnelRows();
+  const applied=sumF(rows,'applied'), arrived=sumF(rows,'arrived'), p1=sumF(rows,'pass1'),
+        p2=sumF(rows,'pass2'), offer=sumF(rows,'offer'), accept=sumF(rows,'accept');
+  const kpis = `<div class="kpis">
+    ${kpiCard('応募数',fmt(applied),'Indeed・選択期間')}
+    ${kpiCard('書類到着',fmt(arrived),'到着率 '+pct(arrived/applied))}
+    ${kpiCard('書類選考①通過',fmt(p1),'通過率 '+pct(p1/applied))}
+    ${kpiCard('書類選考②通過',fmt(p2),'対①通過 '+pct(p2/p1))}
+    ${kpiCard('内定',fmt(offer),'内定率(対応募) '+pct(offer/applied))}
+    ${kpiCard('承諾',fmt(accept),'')}
+  </div>`;
+  const c = el(`<div>${kpis}
+    <div class="card"><h2>選考ファネル<span class="hint">応募 → 書類到着 → 書類①通過 → 書類②通過 → 内定 → 承諾</span></h2>
+      <div id="ovFunnel" class="funnel"></div></div>
+    <div class="card"><h2>月別 応募・到着・①通過 推移</h2><div class="chartwrap"><canvas id="ovTrend"></canvas></div></div>
+    <div class="card"><h2>通過率の推移<span class="hint">到着率・書類①通過率・内定率</span></h2><div class="chartwrap"><canvas id="ovRate"></canvas></div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  drawFunnel('ovFunnel', [
+    ['応募',applied],['書類到着',arrived],['書類①通過',p1],['書類②通過',p2],['内定',offer],['承諾',accept]
+  ]);
+  const labels=rows.map(r=>ymLabel(r.ym));
+  charts.push(new Chart(document.getElementById('ovTrend'),{type:'bar',
+    data:{labels,datasets:[
+      {label:'応募',data:rows.map(r=>r.applied),backgroundColor:'#cfeee3'},
+      {label:'書類到着',data:rows.map(r=>r.arrived),backgroundColor:'#6cc6a3'},
+      {label:'書類①通過',data:rows.map(r=>r.pass1),backgroundColor:'#0e9c74'},
+    ]},options:baseOpt()}));
+  charts.push(new Chart(document.getElementById('ovRate'),{type:'line',
+    data:{labels,datasets:[
+      {label:'書類到着率',data:rows.map(r=>r.arrRate==null?null:r.arrRate*100),borderColor:'#3fa3d9',tension:.3},
+      {label:'書類①通過率',data:rows.map(r=>r.p1Rate==null?null:r.p1Rate*100),borderColor:'#0e9c74',tension:.3},
+      {label:'内定率',data:rows.map(r=>r.offerRate==null?null:r.offerRate*100),borderColor:'#d97706',tension:.3},
+    ]},options:baseOpt('%')}));
+}
+
+function drawFunnel(id, stages){
+  const max = stages[0][1]||1;
+  const wrap=document.getElementById(id);
+  wrap.replaceChildren(...stages.map((st,i)=>{
+    const [name,val]=st; const prev=i>0?stages[i-1][1]:null;
+    const w=Math.max((val/max)*100,2);
+    const conv=prev!=null&&prev>0?` <span class="fconv">${pct(val/prev)}</span>`:'';
+    return el(`<div class="fstage"><div class="fname">${name}</div>
+      <div class="fbarwrap"><div class="fbar" style="width:${w}%;background:${STAGE_COLORS[i]}">${fmt(val)}${conv}</div></div></div>`);
+  }));
+}
+
+// ---------- 書類通過（主役）----------
+function renderFunnel(){
+  const rows=funnelRows();
+  const applied=sumF(rows,'applied'), arrived=sumF(rows,'arrived'), p1=sumF(rows,'pass1'),
+        p2=sumF(rows,'pass2'), offer=sumF(rows,'offer'), accept=sumF(rows,'accept');
+  // ボトルネック判定：各段の通過率で最小のところ
+  const steps=[
+    {name:'応募→書類到着',rate:arrived/applied},
+    {name:'書類到着→書類①通過',rate:p1/arrived},
+    {name:'書類①→書類②通過',rate:p2/p1},
+    {name:'書類②→内定',rate:offer/p2},
+  ];
+  const bottleneck=steps.reduce((m,s)=>(s.rate<m.rate?s:m),steps[0]);
+  const note=`<div class="note">📉 <b>最大のボトルネック：${bottleneck.name}</b>（通過率 ${pct(bottleneck.rate)}）。
+    Indeed応募 ${fmt(applied)} 件のうち内定は ${fmt(offer)} 件（内定率 ${pct(offer/applied)}）。
+    書類は十分に集まり通過もしているが、<b>面接以降での絞り込みが極端に厳しい</b>傾向。</div>`;
+  const c=el(`<div>${note}
+    <div class="card"><h2>選考ファネル<span class="hint">選択期間の合計</span></h2><div id="fnFunnel" class="funnel"></div></div>
+    <div class="card"><h2>月別 書類通過テーブル</h2>
+      <div style="overflow-x:auto">${funnelTable(rows,{applied,arrived,p1,p2,offer,accept})}</div></div>
+    <div class="two">
+      <div class="card"><h2>通過率トレンド</h2><div class="chartwrap"><canvas id="fnRate"></canvas></div></div>
+      <div class="card"><h2>応募 → 到着 → ①通過 件数</h2><div class="chartwrap"><canvas id="fnCnt"></canvas></div></div>
+    </div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  drawFunnel('fnFunnel',[['応募',applied],['書類到着',arrived],['書類①通過',p1],['書類②通過',p2],['内定',offer],['承諾',accept]]);
+  const labels=rows.map(r=>ymLabel(r.ym));
+  charts.push(new Chart(document.getElementById('fnRate'),{type:'line',
+    data:{labels,datasets:[
+      {label:'書類到着率',data:rows.map(r=>r.arrRate==null?null:r.arrRate*100),borderColor:'#3fa3d9',tension:.3},
+      {label:'書類①通過率',data:rows.map(r=>r.p1Rate==null?null:r.p1Rate*100),borderColor:'#0e9c74',tension:.3},
+      {label:'書類②通過率',data:rows.map(r=>r.p2Rate==null?null:r.p2Rate*100),borderColor:'#b6883a',tension:.3},
+    ]},options:baseOpt('%')}));
+  charts.push(new Chart(document.getElementById('fnCnt'),{type:'bar',
+    data:{labels,datasets:[
+      {label:'応募',data:rows.map(r=>r.applied),backgroundColor:'#cfeee3'},
+      {label:'書類到着',data:rows.map(r=>r.arrived),backgroundColor:'#6cc6a3'},
+      {label:'書類①通過',data:rows.map(r=>r.pass1),backgroundColor:'#0e9c74'},
+    ]},options:baseOpt()}));
+}
+function funnelTable(rows,t){
+  const head=`<thead><tr><th>月</th><th>応募</th><th>到着</th><th>到着率</th><th>①通過</th><th>①通過率</th>
+    <th>②通過</th><th>②通過率</th><th>内定</th><th>内定率</th><th>承諾</th></tr></thead>`;
+  const body=rows.map(r=>`<tr><td>${ymLabel(r.ym)}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td>
+    <td class="${rateClass(r.arrRate,.55,.4)}">${pct(r.arrRate)}</td>
+    <td>${fmt(r.pass1)}</td><td class="${rateClass(r.p1Rate,.18,.1)}">${pct(r.p1Rate)}</td>
+    <td>${fmt(r.pass2)}</td><td>${pct(r.p2Rate)}</td>
+    <td>${fmt(r.offer)}</td><td>${pct(r.offerRate)}</td><td>${fmt(r.accept)}</td></tr>`).join('');
+  const total=`<tr class="total"><td>合計/平均</td><td>${fmt(t.applied)}</td><td>${fmt(t.arrived)}</td>
+    <td>${pct(t.arrived/t.applied)}</td><td>${fmt(t.p1)}</td><td>${pct(t.p1/t.applied)}</td>
+    <td>${fmt(t.p2)}</td><td>${pct(t.p2/t.p1)}</td><td>${fmt(t.offer)}</td><td>${pct(t.offer/t.applied)}</td><td>${fmt(t.accept)}</td></tr>`;
+  return `<table>${head}<tbody>${body}${total}</tbody></table>`;
+}
+
+// ---------- 媒体比較 ----------
+function renderMedia(){
+  const m=DATA.media;
+  const note=`<div class="note">媒体別の累計サマリー（「媒体比較」シートより）。期間フィルタは適用されません（媒体別は累計値のみ）。</div>`;
+  const head=`<thead><tr><th>媒体</th><th>応募</th><th>書類到着</th><th>到着率</th><th>①通過</th><th>①通過率</th><th>②通過</th><th>内定</th><th>内定率</th></tr></thead>`;
+  const body=m.map(r=>`<tr><td>${r.name}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td>
+    <td class="${rateClass(r.arrRate,.45,.35)}">${pct(r.arrRate)}</td><td>${fmt(r.pass1)}</td>
+    <td class="${rateClass(r.p1Rate,.18,.1)}">${pct(r.p1Rate)}</td><td>${fmt(r.pass2)}</td>
+    <td>${fmt(r.offer)}</td><td>${pct(r.offerRate)}</td></tr>`).join('');
+  const c=el(`<div>${note}
+    <div class="card"><h2>媒体別 到着率・①通過率</h2><div class="chartwrap"><canvas id="mdRate"></canvas></div></div>
+    <div class="card"><h2>媒体別サマリー</h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  charts.push(new Chart(document.getElementById('mdRate'),{type:'bar',
+    data:{labels:m.map(r=>r.name),datasets:[
+      {label:'書類到着率',data:m.map(r=>r.arrRate*100),backgroundColor:'#6cc6a3'},
+      {label:'書類①通過率',data:m.map(r=>r.p1Rate*100),backgroundColor:'#0e9c74'},
+    ]},options:baseOpt('%')}));
+}
+
+// ---------- ディメンション集計（職種/オフィス/年代）----------
+function aggBy(rows,key){
+  const map=new Map();
+  rows.forEach(r=>{
+    const k=(r[key]||'(不明)')||'(不明)';
+    let o=map.get(k); if(!o){o={k,applied:0,arrived:0,pass1:0,pass2:0,offer:0};map.set(k,o);}
+    o.applied++; if(r.arrived)o.arrived++; if(r.pass1)o.pass1++; if(r.pass2)o.pass2++; if(r.offer)o.offer++;
+  });
+  return [...map.values()].sort((a,b)=>b.applied-a.applied);
+}
+function dimTable(arr,col1){
+  const head=`<thead><tr><th>${col1}</th><th>応募</th><th>到着</th><th>①通過</th><th>①通過率</th><th>②通過</th><th>内定</th></tr></thead>`;
+  const body=arr.map(r=>`<tr><td>${r.k}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td>
+    <td>${fmt(r.pass1)}</td><td class="${rateClass(r.pass1/r.applied,.18,.08)}">${pct(r.pass1/r.applied)}</td>
+    <td>${fmt(r.pass2)}</td><td>${fmt(r.offer)}</td></tr>`).join('');
+  return `<table>${head}<tbody>${body}</tbody></table>`;
+}
+function renderJob(){ renderDim('job','職種', 18); }
+function renderOffice(){ renderDim('office','オフィス／勤務地', 25); }
+function renderDim(key,title,topN){
+  const arr=aggBy(applicantRows(),key);
+  const top=arr.slice(0,topN);
+  const note=`<div class="note">「人事管理用」生データ（${fmt(applicantRows().length)}件）からの集計。職種名・オフィス名が空欄の行は応募求人名から推定。通過は各列の「通過」表記をカウント（内定はごく少数）。</div>`;
+  const c=el(`<div>${note}
+    <div class="card"><h2>${title}別 応募数（上位${topN}）</h2><div class="chartwrap" style="height:${Math.max(260,top.length*22)}px"><canvas id="dimBar"></canvas></div></div>
+    <div class="card"><h2>${title}別 ファネル<span class="hint">応募の多い順</span></h2><div style="overflow-x:auto">${dimTable(arr.slice(0,60),title)}</div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  charts.push(new Chart(document.getElementById('dimBar'),{type:'bar',
+    data:{labels:top.map(r=>r.k),datasets:[
+      {label:'応募',data:top.map(r=>r.applied),backgroundColor:'#cfeee3'},
+      {label:'書類①通過',data:top.map(r=>r.pass1),backgroundColor:'#0e9c74'},
+    ]},options:Object.assign(baseOpt(),{indexAxis:'y',scales:{x:{stacked:false},y:{ticks:{autoSkip:false,font:{size:11}}}}})}));
+}
+
+// ---------- 年代別 ----------
+function renderAge(){
+  const rows=applicantRows().filter(r=>r.age);
+  const order=['10代','20代','30代','40代','50代','60代','70代'];
+  const arr=aggBy(rows,'age').sort((a,b)=>order.indexOf(a.k)-order.indexOf(b.k));
+  const note=`<div class="note">年齢が記載された応募（${fmt(rows.length)}件）の年代別内訳。年齢は10歳刻みの帯のみ保持（個人特定なし）。</div>`;
+  const c=el(`<div>${note}
+    <div class="two">
+      <div class="card"><h2>年代別 応募構成</h2><div class="chartwrap"><canvas id="ageDonut"></canvas></div></div>
+      <div class="card"><h2>年代別 ①通過率</h2><div class="chartwrap"><canvas id="ageRate"></canvas></div></div>
+    </div>
+    <div class="card"><h2>年代別 ファネル</h2><div style="overflow-x:auto">${dimTable(arr,'年代')}</div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  charts.push(new Chart(document.getElementById('ageDonut'),{type:'doughnut',
+    data:{labels:arr.map(r=>r.k),datasets:[{data:arr.map(r=>r.applied),
+      backgroundColor:['#b7e4cf','#6cc6a3','#0e9c74','#3fa3d9','#b6883a','#d97706','#9ca3af']}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right'}}}}));
+  charts.push(new Chart(document.getElementById('ageRate'),{type:'bar',
+    data:{labels:arr.map(r=>r.k),datasets:[{label:'書類①通過率',data:arr.map(r=>r.applied?r.pass1/r.applied*100:0),backgroundColor:'#0e9c74'}]},
+    options:baseOpt('%')}));
+}
+
+// ---------- 広告コスト ----------
+function renderCost(){
+  const c0=DATA.cost;
+  const note=`<div class="note">広告コストは「各数字データ」シートに記録のある <b>${c0.length?ymLabel(c0[0].ym)+'〜'+ymLabel(c0[c0.length-1].ym):'–'}</b> 期間のみ（月額固定運用期）。
+    現在の運用型（クリック課金）の月次コストはこのファイルに含まれていません。</div>`;
+  const tspend=c0.reduce((s,r)=>s+(r.spend||0),0), toffer=c0.reduce((s,r)=>s+(r.offer||0),0), tapplied=c0.reduce((s,r)=>s+(r.applied||0),0);
+  const kpis=`<div class="kpis">
+    ${kpiCard('累計コスト',yen(tspend),'記録のある期間')}
+    ${kpiCard('応募単価',tapplied?yen(tspend/tapplied):'–','コスト/応募')}
+    ${kpiCard('内定',fmt(toffer),'記録期間内')}
+  </div>`;
+  const head=`<thead><tr><th>月</th><th>応募</th><th>到着</th><th>到着率</th><th>通過</th><th>通過率</th><th>一次</th><th>内定</th><th>利用金額</th><th>応募単価</th></tr></thead>`;
+  const body=c0.map(r=>`<tr><td>${ymLabel(r.ym)}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td>
+    <td>${pct(r.arrRate)}</td><td>${fmt(r.pass)}</td><td>${pct(r.passRate)}</td><td>${fmt(r.first)}</td>
+    <td>${fmt(r.offer)}</td><td>${r.spend?yen(r.spend):'–'}</td><td>${r.spend&&r.applied?yen(r.spend/r.applied):'–'}</td></tr>`).join('');
+  const c=el(`<div>${note}${kpis}
+    <div class="card"><h2>月別 利用金額と応募数</h2><div class="chartwrap"><canvas id="costChart"></canvas></div></div>
+    <div class="card"><h2>月別 コスト・ファネル</h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  const labels=c0.map(r=>ymLabel(r.ym));
+  charts.push(new Chart(document.getElementById('costChart'),{
+    data:{labels,datasets:[
+      {type:'bar',label:'利用金額',data:c0.map(r=>r.spend||null),backgroundColor:'#cfeee3',yAxisID:'y'},
+      {type:'line',label:'応募数',data:c0.map(r=>r.applied),borderColor:'#0e9c74',yAxisID:'y1',tension:.3},
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}},
+      scales:{y:{position:'left',ticks:{callback:v=>'¥'+(v/10000)+'万'}},y1:{position:'right',grid:{display:false}}}}}));
+}
+
+// ---------- chart base ----------
+function baseOpt(unit){
+  return {responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{position:'bottom',labels:{font:{size:11},boxWidth:12}},
+      tooltip:{callbacks:{label:c=>c.dataset.label+': '+(unit==='%'?(c.parsed.y!=null?c.parsed.y.toFixed(1)+'%':'–'):fmt(c.parsed.y!=null?c.parsed.y:c.parsed.x))}}},
+    scales:{y:{beginAtZero:true,ticks:{callback:v=>unit==='%'?v+'%':fmt(v)}},x:{ticks:{font:{size:10}}}}};
+}
+
+// ---------- shell ----------
+function renderTabs(){
+  const t=document.getElementById('tabs');
+  t.replaceChildren(...TABS.map(name=>{
+    const d=el(`<div class="tab ${name===state.tab?'active':''}">${name}</div>`);
+    d.onclick=()=>{ state.tab=name; renderTabs(); render(); };
+    return d;
+  }));
+}
+function renderPeriods(){
+  const p=document.getElementById('periodChips');
+  p.replaceChildren(...PERIODS.map(o=>{
+    const d=el(`<span class="chip ${o.key===state.period?'active':''}">${o.label}</span>`);
+    d.onclick=()=>{ state.period=o.key; renderPeriods(); render(); };
+    return d;
+  }));
+}
+function render(){
+  destroyCharts();
+  const r=funnelRows();
+  document.getElementById('scopeNote').textContent =
+    r.length? `対象: ${ymLabel(r[0].ym)}〜${ymLabel(r[r.length-1].ym)}（${r.length}ヶ月）` : '';
+  ({'概要':renderOverview,'書類通過':renderFunnel,'媒体比較':renderMedia,
+    '職種別':renderJob,'オフィス別':renderOffice,'年代別':renderAge,'広告コスト':renderCost}[state.tab])();
+}
+
+// ---------- load ----------
+async function load(){
+  const res=await fetch('data.json?_='+Date.now());
+  if(!res.ok) throw new Error('data.json '+res.status);
+  DATA=await res.json();
+  const lf=DATA.meta&&DATA.meta.latestFunnelYm;
+  document.getElementById('updated').textContent='最新データ: '+(lf?ymLabel(lf):'—');
+  renderPeriods(); renderTabs(); render();
+}
+document.getElementById('refreshBtn').onclick=async()=>{
+  const b=document.getElementById('refreshBtn'); b.textContent='更新中…'; b.disabled=true;
+  try{ await load(); }catch(e){ alert('更新に失敗しました: '+e.message); }
+  b.textContent='最新情報へ更新'; b.disabled=false;
+};
+document.getElementById('logoutBtn').onclick=()=>{ _auth.signOut(); location.reload(); };
+
+// ===== Firebase ログイン（@link-core.co.jp 限定・シードと同じプロジェクト/同一ドメイン）=====
+const firebaseConfig = {
+  apiKey: "AIzaSyA_pzdsr2K3mxpYskT7w24CVT1kysMjkJ0",
+  authDomain: "seed-dashboard-9afc3.firebaseapp.com",
+  projectId: "seed-dashboard-9afc3",
+  storageBucket: "seed-dashboard-9afc3.firebasestorage.app",
+  messagingSenderId: "232349675274",
+  appId: "1:232349675274:web:884bd146d2e61320a754f3"
+};
+const ALLOWED_DOMAIN='link-core.co.jp';
+firebase.initializeApp(firebaseConfig);
+const _auth=firebase.auth();
+const _provider=new firebase.auth.GoogleAuthProvider();
+_provider.setCustomParameters({hd:ALLOWED_DOMAIN,prompt:'select_account'});
+let _loaded=false;
+const _gate=document.getElementById('authGate'), _errEl=document.getElementById('authError');
+function showGate(msg){ _gate.style.display='flex'; if(msg!==undefined) _errEl.textContent=msg; }
+function hideGate(){ _gate.style.display='none'; }
+document.getElementById('loginBtn').onclick=()=>{ _errEl.textContent='';
+  _auth.signInWithPopup(_provider).catch(err=>{ showGate('ログインに失敗しました: '+((err&&err.message)||err)); }); };
+_auth.onAuthStateChanged(user=>{
+  if(user&&user.email&&user.email.toLowerCase().endsWith('@'+ALLOWED_DOMAIN)){
+    hideGate();
+    if(!_loaded){ _loaded=true; load().catch(e=>{ document.getElementById('content').innerHTML='<div class="loading">データの読み込みに失敗しました。<br>'+e.message+'</div>'; }); }
+  } else if(user){
+    showGate('@'+ALLOWED_DOMAIN+' のアカウントでログインしてください（'+user.email+' は対象外です）');
+    _auth.signOut();
+  } else { showGate(); }
+});
+</script>
+</body>
+</html>
