@@ -117,7 +117,7 @@
 </main>
 
 <script>
-const TABS = ['概要','書類通過','月別','ドリルダウン','職種別','求人別','オフィス別','年代別','媒体比較','広告コスト'];
+const TABS = ['概要','書類通過','月別','クロス集計','職種別','求人別','オフィス別','年代別','媒体比較','広告コスト'];
 const DRILL_DIMS = [['office','オフィス'],['posting','求人'],['job','職種'],['ym','月'],['age','年代']];
 const RANGE_PRESETS = [
   {key:'cur', label:'当月'},
@@ -129,7 +129,7 @@ const RANGE_PRESETS = [
 const STAGE_COLORS = ['#0ea882','#22b58d','#3cc79b','#7dd3a8','#b6a04e','#d97706'];
 
 let DATA=null, charts=[];
-const state = { tab:'概要', preset:'all', from:null, to:null, monthSel:null, drillP:'office', drillS:'posting', drillExp:null, offSel:null };
+const state = { tab:'概要', preset:'all', from:null, to:null, monthSel:null, pvRow:'office', pvCol:'ym', pvMetric:'applied', offSel:null };
 
 // ---------- helpers ----------
 const fmt = n => (n==null||isNaN(n))?'–':Math.round(n).toLocaleString('ja-JP');
@@ -390,11 +390,11 @@ function renderOffice(){
   if(inner.draw) inner.draw();
 }
 function officeRanking(all){
-  const top=all.slice(0,25);
+  const top=all.slice(0,30);
   const head=`<thead><tr><th>オフィス</th><th>応募</th><th>到着</th><th>①通過</th><th>①通過率</th><th>②通過</th><th>内定</th></tr></thead>`;
-  const body=all.slice(0,60).map(r=>`<tr class="clickable" data-seloff="${encodeURIComponent(r.k)}"><td>${r.k}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td><td>${fmt(r.pass1)}</td><td class="${rateClass(r.pass1/r.applied,.18,.08)}">${pct(r.pass1/r.applied)}</td><td>${fmt(r.pass2)}</td><td>${fmt(r.offer)}</td></tr>`).join('');
-  return {html:`<div class="card"><h2>オフィス別 応募数（上位25）<span class="hint">行クリックで詳細</span></h2><div class="chartwrap" style="height:${Math.max(260,top.length*22)}px"><canvas id="offBar"></canvas></div></div>
-    <div class="card"><h2>オフィス別 ファネル<span class="hint">行クリックで深掘り</span></h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>`,
+  const body=all.map(r=>`<tr class="clickable" data-seloff="${encodeURIComponent(r.k)}"><td>${r.k}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td><td>${fmt(r.pass1)}</td><td class="${rateClass(r.pass1/r.applied,.18,.08)}">${pct(r.pass1/r.applied)}</td><td>${fmt(r.pass2)}</td><td>${fmt(r.offer)}</td></tr>`).join('');
+  return {html:`<div class="card"><h2>オフィス別 応募数（上位30）<span class="hint">行クリックで詳細</span></h2><div class="chartwrap" style="height:${Math.max(260,top.length*22)}px"><canvas id="offBar"></canvas></div></div>
+    <div class="card"><h2>全オフィス ファネル（${all.length}拠点）<span class="hint">行クリックで深掘り</span></h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>`,
     draw:()=>{ charts.push(new Chart(document.getElementById('offBar'),{type:'bar',data:{labels:top.map(r=>r.k),datasets:[{label:'応募',data:top.map(r=>r.applied),backgroundColor:'#cfeee3'},{label:'①通過',data:top.map(r=>r.pass1),backgroundColor:'#0e9c74'}]},options:Object.assign(baseOpt(),{indexAxis:'y',scales:{y:{ticks:{autoSkip:false,font:{size:11}}}}})})); } };
 }
 function officeDetail(office,rows){
@@ -456,57 +456,54 @@ function renderDim(key,title,topN){
     ]},options:Object.assign(baseOpt(),{indexAxis:'y',scales:{x:{stacked:false},y:{ticks:{autoSkip:false,font:{size:11}}}}})}));
 }
 
-// ---------- ドリルダウン（軸を選べるクロス集計）----------
+// ---------- クロス集計（ピボットテーブル：行軸 × 列軸 × 指標）----------
 function dimVal(r,key){ const v=(key==='ym'?r.ym:r[key]); return (v==null||v==='')?'(不明)':v; }
-function dimDisp(key,val){ return (key==='ym'&&val!=='(不明)')? ymLabel(val): val; }
 function funnelCount(rows){ const o={applied:rows.length,arrived:0,pass1:0,pass2:0,offer:0};
   rows.forEach(r=>{ if(r.arrived)o.arrived++; if(r.pass1)o.pass1++; if(r.pass2)o.pass2++; if(r.offer)o.offer++; }); return o; }
-function drillRow(label,c,sub,open,expandable){
-  const pad=sub?'padding-left:26px;color:#5f7d74':'';
-  const car=expandable?`<span style="display:inline-block;width:14px;color:#10b981">${open?'▼':'▶'}</span>`:(sub?'':'<span style="display:inline-block;width:14px"></span>');
-  return `<td style="${pad}">${car}${label}</td><td>${fmt(c.applied)}</td><td>${fmt(c.arrived)}</td>
-    <td>${fmt(c.pass1)}</td><td class="${sub?'':rateClass(c.pass1/c.applied,.18,.08)}">${pct(c.pass1/c.applied)}</td>
-    <td>${fmt(c.pass2)}</td><td>${fmt(c.offer)}</td>`;
-}
-function renderDrill(){
-  if(!state.drillExp) state.drillExp=new Set();
-  const P=state.drillP, S=state.drillS;
+const CROSS_METRICS=[['applied','応募数'],['arrived','書類到着'],['pass1','①通過'],['pass2','②通過'],['offer','内定']];
+function renderCross(){
+  if(!state.pvRow) state.pvRow='office';
+  if(state.pvCol===undefined) state.pvCol='ym';
+  if(!state.pvMetric) state.pvMetric='applied';
+  const R=state.pvRow, C=state.pvCol, M=state.pvMetric;
   const rows=applicantRows();
-  const pmap=new Map();
-  rows.forEach(r=>{ const k=dimVal(r,P); (pmap.get(k)||pmap.set(k,[]).get(k)).push(r); });
-  let groups=[...pmap.entries()].map(([k,rs])=>({k,rs,c:funnelCount(rs)})).sort((a,b)=>b.c.applied-a.c.applied);
-  const CAP=80, truncated=groups.length>CAP; groups=groups.slice(0,CAP);
-  const gtotal=funnelCount(rows);
-  const opt=(sel,withNone)=>(withNone?[['','なし']]:[]).concat(DRILL_DIMS).map(([k,l])=>`<option value="${k}" ${k===sel?'selected':''}>${l}</option>`).join('');
-  let body='';
-  groups.forEach(g=>{
-    const open=state.drillExp.has(g.k), expandable=!!S;
-    body+=`<tr class="${expandable?'clickable':''}" data-pk="${encodeURIComponent(g.k)}">${drillRow(dimDisp(P,g.k),g.c,false,open,expandable)}</tr>`;
-    if(expandable && open){
-      const smap=new Map();
-      g.rs.forEach(r=>{ const k=dimVal(r,S); (smap.get(k)||smap.set(k,[]).get(k)).push(r); });
-      [...smap.entries()].map(([k,rs])=>({k,c:funnelCount(rs)})).sort((a,b)=>b.c.applied-a.c.applied).forEach(s=>{
-        body+=`<tr style="background:#fafdfb">${drillRow(dimDisp(S,s.k),s.c,true,false,false)}</tr>`;
-      });
-    }
+  const cell = M==='applied' ? (_=>1) : (r=>r[M]?1:0);
+  const rowMap=new Map(), colTot=new Map();
+  rows.forEach(r=>{
+    const rk=dimVal(r,R), ck=C?dimVal(r,C):'計', v=cell(r);
+    if(!rowMap.has(rk)) rowMap.set(rk,{cells:new Map(),total:0});
+    const o=rowMap.get(rk); o.cells.set(ck,(o.cells.get(ck)||0)+v); o.total+=v;
+    colTot.set(ck,(colTot.get(ck)||0)+v);
   });
-  const head=`<thead><tr><th>区分</th><th>応募</th><th>到着</th><th>①通過</th><th>①通過率</th><th>②通過</th><th>内定</th></tr></thead>`;
-  const total=`<tr class="total"><td>合計</td><td>${fmt(gtotal.applied)}</td><td>${fmt(gtotal.arrived)}</td><td>${fmt(gtotal.pass1)}</td><td>${pct(gtotal.pass1/gtotal.applied)}</td><td>${fmt(gtotal.pass2)}</td><td>${fmt(gtotal.offer)}</td></tr>`;
-  const Pl=DRILL_DIMS.find(d=>d[0]===P)[1], Sl=S?DRILL_DIMS.find(d=>d[0]===S)[1]:'';
+  let rowKeys=[...rowMap.keys()].sort((a,b)=>rowMap.get(b).total-rowMap.get(a).total);
+  const ROWCAP=150, rowTrunc=rowKeys.length>ROWCAP; rowKeys=rowKeys.slice(0,ROWCAP);
+  let colKeys=[...colTot.keys()];
+  colKeys.sort(C==='ym'?undefined:(a,b)=>colTot.get(b)-colTot.get(a));
+  const dispR=k=>R==='ym'&&k!=='(不明)'?ymLabel(k):k;
+  const dispC=k=>C==='ym'&&k!=='(不明)'?ymLabel(k):k;
+  const opt=(arr,sel,withNone)=>(withNone?[['','なし（合計のみ）']]:[]).concat(arr).map(([k,l])=>`<option value="${k}" ${k===sel?'selected':''}>${l}</option>`).join('');
+  let thead=`<tr><th>${DRILL_DIMS.find(d=>d[0]===R)[1]}</th>${C?colKeys.map(k=>`<th>${dispC(k)}</th>`).join(''):''}<th>合計</th></tr>`;
+  let body='';
+  rowKeys.forEach(rk=>{ const o=rowMap.get(rk);
+    body+=`<tr><td>${dispR(rk)}</td>${C?colKeys.map(k=>{const v=o.cells.get(k)||0;return `<td>${v?fmt(v):'<span style="color:#cfd8d3">·</span>'}</td>`;}).join(''):''}<td style="font-weight:700">${fmt(o.total)}</td></tr>`;
+  });
+  const grand=rowKeys.reduce((s,rk)=>s+rowMap.get(rk).total,0);
+  const totRow=`<tr class="total"><td>合計</td>${C?colKeys.map(k=>`<td>${fmt(colTot.get(k)||0)}</td>`).join(''):''}<td>${fmt(grand)}</td></tr>`;
+  const Rl=DRILL_DIMS.find(d=>d[0]===R)[1], Cl=C?DRILL_DIMS.find(d=>d[0]===C)[1]:'（列なし）', Ml=CROSS_METRICS.find(m=>m[0]===M)[1];
   const c=el(`<div>
     <div class="card" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-      <span style="font-weight:700">主軸</span><select id="drillP" class="msel">${opt(P,false)}</select>
-      <span style="font-weight:700;margin-left:6px">第2軸</span><select id="drillS" class="msel">${opt(S,true)}</select>
-      <span class="muted">主軸の行を▶クリックで第2軸に展開。上部の期間指定に連動。</span>
+      <span style="font-weight:700">行軸</span><select id="pvRow" class="msel">${opt(DRILL_DIMS,R,false)}</select>
+      <span style="font-weight:700;margin-left:6px">列軸</span><select id="pvCol" class="msel">${opt(DRILL_DIMS,C,true)}</select>
+      <span style="font-weight:700;margin-left:6px">指標</span><select id="pvMetric" class="msel">${opt(CROSS_METRICS,M,false)}</select>
+      <span class="muted">行×列のピボット集計。期間指定に連動。</span>
     </div>
-    <div class="card"><h2>${Pl}${Sl?' × '+Sl:''} 別 選考ファネル${truncated?'<span class="hint">応募の多い上位'+CAP+'件</span>':''}</h2>
-      <div style="overflow-x:auto"><table>${head}<tbody>${body}${total}</tbody></table></div></div>
+    <div class="card"><h2>${Rl} × ${Cl}：${Ml}${rowTrunc?'<span class="hint">行は上位'+ROWCAP+'</span>':''}</h2>
+      <div style="overflow-x:auto"><table><thead>${thead}</thead><tbody>${body}${totRow}</tbody></table></div></div>
   </div>`);
   document.getElementById('content').replaceChildren(c);
-  document.getElementById('drillP').onchange=e=>{ state.drillP=e.target.value; if(state.drillS===state.drillP)state.drillS=''; state.drillExp=new Set(); render(); };
-  document.getElementById('drillS').onchange=e=>{ state.drillS=e.target.value; state.drillExp=new Set(); render(); };
-  if(S) c.querySelectorAll('tr[data-pk]').forEach(tr=>tr.onclick=()=>{ const k=decodeURIComponent(tr.dataset.pk);
-    state.drillExp.has(k)?state.drillExp.delete(k):state.drillExp.add(k); render(); });
+  document.getElementById('pvRow').onchange=e=>{ state.pvRow=e.target.value; if(state.pvCol===state.pvRow)state.pvCol=''; render(); };
+  document.getElementById('pvCol').onchange=e=>{ state.pvCol=e.target.value; render(); };
+  document.getElementById('pvMetric').onchange=e=>{ state.pvMetric=e.target.value; render(); };
 }
 
 // ---------- 年代別 ----------
@@ -608,7 +605,7 @@ function render(){
     (state.tab==='月別') ? '（月別タブは下の「対象月」で切替）' :
     (state.tab==='媒体比較') ? '（媒体比較は累計値・期間指定の対象外）' :
     r.length? `対象: ${ymLabel(r[0].ym)}〜${ymLabel(r[r.length-1].ym)}（${r.length}ヶ月）` : '該当データなし';
-  ({'概要':renderOverview,'書類通過':renderFunnel,'月別':renderMonth,'ドリルダウン':renderDrill,
+  ({'概要':renderOverview,'書類通過':renderFunnel,'月別':renderMonth,'クロス集計':renderCross,
     '職種別':renderJob,'求人別':renderPosting,'オフィス別':renderOffice,'年代別':renderAge,
     '媒体比較':renderMedia,'広告コスト':renderCost}[state.tab])();
 }
