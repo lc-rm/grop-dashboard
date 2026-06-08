@@ -362,6 +362,8 @@ function renderJob(){ renderDim('job','職種', 18); }
 function renderPosting(){ renderDim('posting','求人', 20); }
 
 // ---------- オフィス別（選択して詳細分析／複数で比較）----------
+// 市区名（○○市/○○区/○○町）と不明はオフィス表示から除外（正規オフィス名は末尾がオフィス/センター等で残る）
+function offHide(o){ return !o || o==='(不明)' || /[市区町]$/.test(o); }
 function monthlySeries(rows){
   const m=new Map();
   rows.forEach(r=>{ if(!r.ym)return; (m.get(r.ym)||m.set(r.ym,[]).get(r.ym)).push(r); });
@@ -370,7 +372,7 @@ function monthlySeries(rows){
 function renderOffice(){
   if(!state.offSel) state.offSel=[];
   const rows=applicantRows();
-  const all=aggBy(rows,'office');
+  const all=aggBy(rows,'office').filter(r=>!offHide(r.k));
   const sel=state.offSel.filter(o=>all.some(a=>a.k===o));
   state.offSel=sel;
   const chips=sel.map(o=>`<span class="chip active" style="cursor:default">${o} <span data-rm="${encodeURIComponent(o)}" style="cursor:pointer;font-weight:800;margin-left:4px">×</span></span>`).join('');
@@ -466,7 +468,8 @@ function renderCross(){
   if(state.pvCol===undefined) state.pvCol='ym';
   if(!state.pvMetric) state.pvMetric='applied';
   const R=state.pvRow, C=state.pvCol, M=state.pvMetric;
-  const rows=applicantRows();
+  let rows=applicantRows();
+  if(R==='office'||C==='office') rows=rows.filter(r=>!offHide(dimVal(r,'office')));
   const cell = M==='applied' ? (_=>1) : (r=>r[M]?1:0);
   const rowMap=new Map(), colTot=new Map();
   rows.forEach(r=>{
