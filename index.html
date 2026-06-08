@@ -363,7 +363,7 @@ function renderPosting(){ renderDim('posting','求人', 20); }
 
 // ---------- オフィス別（選択して詳細分析／複数で比較）----------
 // 市区名（○○市/○○区/○○町）と不明はオフィス表示から除外（正規オフィス名は末尾がオフィス/センター等で残る）
-function offHide(o){ return !o || o==='(不明)' || /[市区町]$/.test(o); }
+function offHide(o){ return !o || o==='(不明)' || /[市区町村郡県府都]$/.test(o); }
 function monthlySeries(rows){
   const m=new Map();
   rows.forEach(r=>{ if(!r.ym)return; (m.get(r.ym)||m.set(r.ym,[]).get(r.ym)).push(r); });
