@@ -29,6 +29,9 @@
   .chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 12px;font-size:12px;cursor:pointer;color:#374151}
   .chip.active{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
   .msel{border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:12px;color:#374151;background:#fff;cursor:pointer}
+  .stepbtn{border:1px solid var(--line);border-radius:7px;padding:4px 9px;font-size:12px;color:#0d9488;background:#fff;cursor:pointer;user-select:none;font-weight:700}
+  .stepbtn:hover{background:#f0faf6}
+  .stepbtn:active{transform:translateY(1px)}
   .tabs{display:flex;gap:4px;padding:0 16px;background:#fff;border-bottom:1px solid var(--line);overflow-x:auto;position:sticky;top:101px;z-index:14}
   .tab{padding:11px 16px;font-size:13px;cursor:pointer;color:var(--sub);border-bottom:3px solid transparent;white-space:nowrap}
   .tab.active{color:var(--brand);border-bottom-color:var(--brand);font-weight:700}
@@ -46,7 +49,8 @@
   table{border-collapse:collapse;width:100%;font-size:12.5px}
   th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
   th:first-child,td:first-child{text-align:left}
-  thead th{background:#f9fafb;color:#374151;font-weight:700}
+  thead th{background:#f9fafb;color:#374151;font-weight:700;position:sticky;top:0;z-index:2}
+  .tblwrap{overflow:auto;max-height:62vh}
   tbody tr:hover{background:#f8fafc}
   tr.total{font-weight:800;background:#f1f5f9}
   .rate-good{color:var(--good);font-weight:700}
@@ -121,6 +125,7 @@ const TABS = ['概要','書類通過','月別','クロス集計','職種別','�
 const DRILL_DIMS = [['office','オフィス'],['posting','求人'],['job','職種'],['ym','月'],['age','年代']];
 const RANGE_PRESETS = [
   {key:'cur', label:'当月'},
+  {key:'prev', label:'前月'},
   {key:'all', label:'全期間'},
   {key:'12m', label:'直近12ヶ月'},
   {key:'6m',  label:'直近6ヶ月'},
@@ -152,10 +157,17 @@ function setPreset(key){
   state.preset=key;
   if(key==='all'){ state.from=ys[0]; state.to=ys[ys.length-1]; return; }
   if(key==='cur'){ state.from=ys[ys.length-1]; state.to=ys[ys.length-1]; return; }
+  if(key==='prev'){ const i=Math.max(0,ys.length-2); state.from=ys[i]; state.to=ys[i]; return; }
   const n={'12m':12,'6m':6,'3m':3}[key]||ys.length;
   const sub=ys.slice(-n); state.from=sub[0]; state.to=ys[ys.length-1];
 }
 function inRange(ym){ return ym && state.from && ym>=state.from && ym<=state.to; }
+function shiftRange(delta){
+  const ys=allYms(); const i=ys.indexOf(state.from), j=ys.indexOf(state.to);
+  if(i<0||j<0) return;
+  if(i+delta<0||j+delta>ys.length-1) return; // 端を越えない
+  state.from=ys[i+delta]; state.to=ys[j+delta]; state.preset='';
+}
 function funnelRows(){ return DATA.funnel.filter(r=>inRange(r.ym)); }
 function applicantRows(){ return DATA.applicants.filter(r=>inRange(r.ym)); }
 function costRows(){ return (DATA.cost||[]).filter(r=>inRange(r.ym)); }
@@ -219,21 +231,10 @@ function renderFunnel(){
   const rows=funnelRows();
   const applied=sumF(rows,'applied'), arrived=sumF(rows,'arrived'), p1=sumF(rows,'pass1'),
         p2=sumF(rows,'pass2'), offer=sumF(rows,'offer'), accept=sumF(rows,'accept');
-  // ボトルネック判定：各段の通過率で最小のところ
-  const steps=[
-    {name:'応募→書類到着',rate:arrived/applied},
-    {name:'書類到着→書類①通過',rate:p1/arrived},
-    {name:'書類①→書類②通過',rate:p2/p1},
-    {name:'書類②→内定',rate:offer/p2},
-  ];
-  const bottleneck=steps.reduce((m,s)=>(s.rate<m.rate?s:m),steps[0]);
-  const note=`<div class="note">📉 <b>最大のボトルネック：${bottleneck.name}</b>（通過率 ${pct(bottleneck.rate)}）。
-    Indeed応募 ${fmt(applied)} 件のうち内定は ${fmt(offer)} 件（内定率 ${pct(offer/applied)}）。
-    書類は十分に集まり通過もしているが、<b>面接以降での絞り込みが極端に厳しい</b>傾向。</div>`;
-  const c=el(`<div>${note}
+  const c=el(`<div>
     <div class="card"><h2>選考ファネル<span class="hint">選択期間の合計</span></h2><div id="fnFunnel" class="funnel"></div></div>
     <div class="card"><h2>月別 書類通過テーブル</h2>
-      <div style="overflow-x:auto">${funnelTable(rows,{applied,arrived,p1,p2,offer,accept})}</div></div>
+      <div class="tblwrap">${funnelTable(rows,{applied,arrived,p1,p2,offer,accept})}</div></div>
     <div class="two">
       <div class="card"><h2>通過率トレンド</h2><div class="chartwrap"><canvas id="fnRate"></canvas></div></div>
       <div class="card"><h2>応募 → 到着 → ①通過 件数</h2><div class="chartwrap"><canvas id="fnCnt"></canvas></div></div>
@@ -288,7 +289,9 @@ function renderMonth(){
   const c=el(`<div>
     <div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <span style="font-weight:700">対象月</span>
+      <span class="stepbtn" id="moPrev" title="前の月">◀</span>
       <select id="monthSel" class="msel">${opts}</select>
+      <span class="stepbtn" id="moNext" title="次の月">▶</span>
       <span class="muted">この月の応募〜選考を深掘り（上部の期間指定とは独立）</span>
     </div>
     ${kpis}
@@ -298,10 +301,12 @@ function renderMonth(){
       <div class="card"><h2>${ymLabel(ym)} 職種別 応募（上位10）</h2><div class="chartwrap" style="height:${Math.max(220,Math.min(10,aggBy(apps,'job').length)*26+60)}px"><canvas id="moJob"></canvas></div></div>
       <div class="card"><h2>${ymLabel(ym)} 年代別 応募</h2><div class="chartwrap"><canvas id="moAge"></canvas></div></div>
     </div>
-    <div class="card"><h2>${ymLabel(ym)} オフィス／勤務地別 ファネル</h2><div style="overflow-x:auto">${dimTable(aggBy(apps,'office').slice(0,30),'オフィス／勤務地')}</div></div>
+    <div class="card"><h2>${ymLabel(ym)} オフィス／勤務地別 ファネル</h2><div class="tblwrap">${dimTable(aggBy(apps,'office').slice(0,30),'オフィス／勤務地')}</div></div>
   </div>`);
   document.getElementById('content').replaceChildren(c);
   document.getElementById('monthSel').onchange=e=>{ state.monthSel=e.target.value; render(); };
+  document.getElementById('moPrev').onclick=()=>{ const i=ys.indexOf(state.monthSel); if(i>0){ state.monthSel=ys[i-1]; render(); } };
+  document.getElementById('moNext').onclick=()=>{ const i=ys.indexOf(state.monthSel); if(i<ys.length-1){ state.monthSel=ys[i+1]; render(); } };
   drawFunnel('moFunnel',[['応募',fr.applied||0],['書類到着',fr.arrived||0],['書類①通過',fr.pass1||0],['書類②通過',fr.pass2||0],['内定',fr.offer||0],['承諾',fr.accept||0]]);
   const labels=DATA.funnel.map(r=>ymLabel(r.ym));
   charts.push(new Chart(document.getElementById('moTrend'),{type:'bar',
@@ -331,7 +336,7 @@ function renderMedia(){
     <td>${fmt(r.offer)}</td><td>${pct(r.offerRate)}</td></tr>`).join('');
   const c=el(`<div>${note}
     <div class="card"><h2>媒体別 到着率・①通過率</h2><div class="chartwrap"><canvas id="mdRate"></canvas></div></div>
-    <div class="card"><h2>媒体別サマリー</h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>
+    <div class="card"><h2>媒体別サマリー</h2><div class="tblwrap"><table>${head}<tbody>${body}</tbody></table></div></div>
   </div>`);
   document.getElementById('content').replaceChildren(c);
   charts.push(new Chart(document.getElementById('mdRate'),{type:'bar',
@@ -396,7 +401,7 @@ function officeRanking(all){
   const head=`<thead><tr><th>オフィス</th><th>応募</th><th>到着</th><th>①通過</th><th>①通過率</th><th>②通過</th><th>内定</th></tr></thead>`;
   const body=all.map(r=>`<tr class="clickable" data-seloff="${encodeURIComponent(r.k)}"><td>${r.k}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td><td>${fmt(r.pass1)}</td><td class="${rateClass(r.pass1/r.applied,.18,.08)}">${pct(r.pass1/r.applied)}</td><td>${fmt(r.pass2)}</td><td>${fmt(r.offer)}</td></tr>`).join('');
   return {html:`<div class="card"><h2>オフィス別 応募数（上位30）<span class="hint">行クリックで詳細</span></h2><div class="chartwrap" style="height:${Math.max(260,top.length*22)}px"><canvas id="offBar"></canvas></div></div>
-    <div class="card"><h2>全オフィス ファネル（${all.length}拠点）<span class="hint">行クリックで深掘り</span></h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>`,
+    <div class="card"><h2>全オフィス ファネル（${all.length}拠点）<span class="hint">行クリックで深掘り</span></h2><div class="tblwrap"><table>${head}<tbody>${body}</tbody></table></div></div>`,
     draw:()=>{ charts.push(new Chart(document.getElementById('offBar'),{type:'bar',data:{labels:top.map(r=>r.k),datasets:[{label:'応募',data:top.map(r=>r.applied),backgroundColor:'#cfeee3'},{label:'①通過',data:top.map(r=>r.pass1),backgroundColor:'#0e9c74'}]},options:Object.assign(baseOpt(),{indexAxis:'y',scales:{y:{ticks:{autoSkip:false,font:{size:11}}}}})})); } };
 }
 function officeDetail(office,rows){
@@ -416,8 +421,8 @@ function officeDetail(office,rows){
     <div class="two">
       <div class="card"><h2>職種別 応募（上位10）</h2><div class="chartwrap"><canvas id="offJob"></canvas></div></div>
       <div class="card"><h2>年代別 応募</h2><div class="chartwrap"><canvas id="offAge"></canvas></div></div></div>
-    <div class="card"><h2>求人別 ファネル</h2><div style="overflow-x:auto">${dimTable(posts.slice(0,40),'求人')}</div></div>
-    <div class="card"><h2>職種別 ファネル</h2><div style="overflow-x:auto">${dimTable(jobs.slice(0,40),'職種')}</div></div>`,
+    <div class="card"><h2>求人別 ファネル</h2><div class="tblwrap">${dimTable(posts.slice(0,40),'求人')}</div></div>
+    <div class="card"><h2>職種別 ファネル</h2><div class="tblwrap">${dimTable(jobs.slice(0,40),'職種')}</div></div>`,
     draw:()=>{
       drawFunnel('offFunnel',[['応募',c.applied],['書類到着',c.arrived],['書類①通過',c.pass1],['書類②通過',c.pass2],['内定',c.offer]]);
       charts.push(new Chart(document.getElementById('offTrend'),{type:'bar',data:{labels:ms.map(m=>ymLabel(m.ym)),datasets:[{label:'応募',data:ms.map(m=>m.applied),backgroundColor:'#cfeee3'},{label:'①通過',data:ms.map(m=>m.pass1),backgroundColor:'#0e9c74'}]},options:baseOpt()}));
@@ -433,7 +438,7 @@ function officeCompare(sel,rows){
   const PAL=['#0e9c74','#3fa3d9','#b6883a','#d97706','#9c6ade','#e85d75','#2bb0a3','#8aa029'];
   return {html:`<div class="card"><h2>比較：応募数 と 到着率・①通過率</h2><div class="chartwrap"><canvas id="cmpBar"></canvas></div></div>
     <div class="card"><h2>月別 応募数の比較</h2><div class="chartwrap"><canvas id="cmpTrend"></canvas></div></div>
-    <div class="card"><h2>比較テーブル</h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>`,
+    <div class="card"><h2>比較テーブル</h2><div class="tblwrap"><table>${head}<tbody>${body}</tbody></table></div></div>`,
     draw:()=>{
       charts.push(new Chart(document.getElementById('cmpBar'),{data:{labels:data.map(d=>d.k),datasets:[
         {type:'bar',label:'応募',data:data.map(d=>d.c.applied),backgroundColor:'#cfeee3',yAxisID:'y'},
@@ -448,7 +453,7 @@ function renderDim(key,title,topN){
   const note=`<div class="note">「人事管理用」生データ（${fmt(applicantRows().length)}件）からの集計。職種名・オフィス名が空欄の行は応募求人名から推定。通過は各列の「通過」表記をカウント（内定はごく少数）。</div>`;
   const c=el(`<div>${note}
     <div class="card"><h2>${title}別 応募数（上位${topN}）</h2><div class="chartwrap" style="height:${Math.max(260,top.length*22)}px"><canvas id="dimBar"></canvas></div></div>
-    <div class="card"><h2>${title}別 ファネル<span class="hint">応募の多い順</span></h2><div style="overflow-x:auto">${dimTable(arr.slice(0,60),title)}</div></div>
+    <div class="card"><h2>${title}別 ファネル<span class="hint">応募の多い順</span></h2><div class="tblwrap">${dimTable(arr.slice(0,60),title)}</div></div>
   </div>`);
   document.getElementById('content').replaceChildren(c);
   charts.push(new Chart(document.getElementById('dimBar'),{type:'bar',
@@ -501,7 +506,7 @@ function renderCross(){
       <span class="muted">行×列のピボット集計。期間指定に連動。</span>
     </div>
     <div class="card"><h2>${Rl} × ${Cl}：${Ml}${rowTrunc?'<span class="hint">行は上位'+ROWCAP+'</span>':''}</h2>
-      <div style="overflow-x:auto"><table><thead>${thead}</thead><tbody>${body}${totRow}</tbody></table></div></div>
+      <div class="tblwrap"><table><thead>${thead}</thead><tbody>${body}${totRow}</tbody></table></div></div>
   </div>`);
   document.getElementById('content').replaceChildren(c);
   document.getElementById('pvRow').onchange=e=>{ state.pvRow=e.target.value; if(state.pvCol===state.pvRow)state.pvCol=''; render(); };
@@ -520,7 +525,7 @@ function renderAge(){
       <div class="card"><h2>年代別 応募構成</h2><div class="chartwrap"><canvas id="ageDonut"></canvas></div></div>
       <div class="card"><h2>年代別 ①通過率</h2><div class="chartwrap"><canvas id="ageRate"></canvas></div></div>
     </div>
-    <div class="card"><h2>年代別 ファネル</h2><div style="overflow-x:auto">${dimTable(arr,'年代')}</div></div>
+    <div class="card"><h2>年代別 ファネル</h2><div class="tblwrap">${dimTable(arr,'年代')}</div></div>
   </div>`);
   document.getElementById('content').replaceChildren(c);
   charts.push(new Chart(document.getElementById('ageDonut'),{type:'doughnut',
@@ -552,7 +557,7 @@ function renderCost(){
   const c=el(`<div>${note}${kpis}
     <div class="card"><h2>予算 vs 消化額 と 応募数(CV)</h2><div class="chartwrap"><canvas id="costChart"></canvas></div></div>
     <div class="card"><h2>CPA（応募単価）の推移<span class="hint">低いほど効率が良い</span></h2><div class="chartwrap"><canvas id="cpaChart"></canvas></div></div>
-    <div class="card"><h2>月別 広告パフォーマンス</h2><div style="overflow-x:auto"><table>${head}<tbody>${body}</tbody></table></div></div>
+    <div class="card"><h2>月別 広告パフォーマンス</h2><div class="tblwrap"><table>${head}<tbody>${body}</tbody></table></div></div>
   </div>`);
   document.getElementById('content').replaceChildren(c);
   const labels=c0.map(r=>ymLabel(r.ym));
@@ -592,12 +597,16 @@ function renderPeriods(){
   const opts=ys.map(y=>`<option value="${y}">${ymLabel(y)}</option>`).join('');
   p.innerHTML = chips +
     `<span class="ctl-label" style="margin-left:8px">期間指定</span>`+
+    `<span class="stepbtn" id="prevMo" title="1ヶ月戻す">◀</span>`+
     `<select id="fromSel" class="msel">${opts}</select>`+
     `<span class="muted">〜</span>`+
-    `<select id="toSel" class="msel">${opts}</select>`;
+    `<select id="toSel" class="msel">${opts}</select>`+
+    `<span class="stepbtn" id="nextMo" title="1ヶ月進める">▶</span>`;
   document.getElementById('fromSel').value=state.from;
   document.getElementById('toSel').value=state.to;
   p.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{ setPreset(c.dataset.k); renderPeriods(); render(); });
+  document.getElementById('prevMo').onclick=()=>{ shiftRange(-1); renderPeriods(); render(); };
+  document.getElementById('nextMo').onclick=()=>{ shiftRange(1); renderPeriods(); render(); };
   document.getElementById('fromSel').onchange=e=>{ state.from=e.target.value; if(state.from>state.to)state.to=state.from; state.preset=''; renderPeriods(); render(); };
   document.getElementById('toSel').onchange=e=>{ state.to=e.target.value; if(state.to<state.from)state.from=state.to; state.preset=''; renderPeriods(); render(); };
 }
