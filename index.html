@@ -141,6 +141,8 @@ const fmt = n => (n==null||isNaN(n))?'–':Math.round(n).toLocaleString('ja-JP')
 const yen = n => (n==null||isNaN(n))?'–':'¥'+Math.round(n).toLocaleString('ja-JP');
 const pct = r => (r==null||isNaN(r))?'–':(r*100).toFixed(1)+'%';
 const ymLabel = ym => ym ? ym.slice(0,4)+'/'+ym.slice(4,6) : '';
+function fmtDateTime(iso){ try{ const d=new Date(iso); if(isNaN(d)) return ''; const j=new Date(d.getTime()+9*3600*1000); const p=n=>String(n).padStart(2,'0');
+  return `${j.getUTCFullYear()}/${p(j.getUTCMonth()+1)}/${p(j.getUTCDate())} ${p(j.getUTCHours())}:${p(j.getUTCMinutes())}`; }catch(e){ return ''; } }
 function rateClass(r, good, bad){ if(r==null) return ''; if(r>=good) return 'rate-good'; if(r<bad) return 'rate-bad'; return ''; }
 function destroyCharts(){ charts.forEach(c=>{try{c.destroy()}catch(e){}}); charts=[]; }
 function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
@@ -638,8 +640,8 @@ async function load(){
   const res=await fetch('data.json?_='+Date.now());
   if(!res.ok) throw new Error('data.json '+res.status);
   DATA=await res.json();
-  const lf=DATA.meta&&DATA.meta.latestFunnelYm;
-  document.getElementById('updated').textContent='最新データ: '+(lf?ymLabel(lf):'—');
+  const lf=DATA.meta&&DATA.meta.latestFunnelYm, fa=DATA.meta&&DATA.meta.fetchedAt;
+  document.getElementById('updated').textContent='最新データ: '+(lf?ymLabel(lf):'—')+(fa?'　／　更新 '+fmtDateTime(fa):'');
   setPreset('all');
   state.monthSel=allYms().slice(-1)[0]||null;
   renderPeriods(); renderTabs(); render();
