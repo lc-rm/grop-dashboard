@@ -1,233 +1,685 @@
-/**
- * GROP（本社）採用分析ダッシュボード — データ集計＆GitHub自動更新 Apps Script
- * （個人情報なし・集計用。convert.py と同じスキーマを出力）
- *
- * 役割：
- *  1) buildData() … GROPスプレッドシートの「人事管理用 / 書類通過 / 媒体比較 / 各数字データ」から
- *     分析に必要な非個人情報だけを集計（★氏名・正確な年齢は出力しない／年齢は○代の帯のみ）
- *  2) autoPush() … 集計データを GitHub の data.json に上書き（5分ごとに自動実行）
- *
- * 【初回セットアップ（会社アカウント r_murai で実行）】
- *  A. GitHubで fine-grained トークン（Contents: Read and write / 対象: lc-rm/grop-dashboard）を作成
- *  B. このコードを script.google.com のプロジェクトに丸ごと貼り付け
- *  C. 「プロジェクトの設定（歯車）> スクリプト プロパティ」で  GITHUB_TOKEN = （作ったトークン） を追加
- *  D. 関数 setupTrigger を1回だけ実行（▶実行）→ 5分ごとの自動更新が有効に
- */
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GROP（本社） 採用分析ダッシュボード</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="%2310b981"/><stop offset="1" stop-color="%2334d399"/></linearGradient></defs><rect width="100" height="100" rx="26" fill="url(%23g)"/><text x="50" y="66" font-size="46" font-family="Arial" font-weight="bold" fill="white" text-anchor="middle">G</text></svg>'>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<style>
+  :root{
+    --bg:#f0faf6; --card:#fff; --ink:#16302a; --sub:#5f7d74; --line:#d8ece4;
+    --brand:#10b981; --good:#059669; --warn:#d97706; --bad:#e11d48; --accent:#0d9488;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;background:var(--bg);color:var(--ink)}
+  header{background:linear-gradient(135deg,#0ea882,#34d399);color:#fff;padding:14px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:sticky;top:0;z-index:20}
+  header h1{font-size:17px;margin:0;font-weight:700;letter-spacing:.02em}
+  header .powered{font-size:11px;color:#d1fae5}
+  .updated{font-size:12px;color:#ecfdf5;margin-left:auto}
+  #refreshBtn{background:#fff;color:#0d9488;border:0;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:800;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+  #refreshBtn:active{transform:translateY(1px)}
+  #logoutBtn{background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.55);border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer}
+  #logoutBtn:hover{background:rgba(255,255,255,.28)}
+  .controls{background:#fff;border-bottom:1px solid var(--line);padding:10px 20px;display:flex;gap:18px;flex-wrap:wrap;align-items:center;position:sticky;top:50px;z-index:15}
+  .ctl-group{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .ctl-label{font-size:11px;color:var(--sub);margin-right:2px}
+  .chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 12px;font-size:12px;cursor:pointer;color:#374151}
+  .chip.active{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+  .msel{border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:12px;color:#374151;background:#fff;cursor:pointer}
+  .stepbtn{border:1px solid var(--line);border-radius:7px;padding:4px 9px;font-size:12px;color:#0d9488;background:#fff;cursor:pointer;user-select:none;font-weight:700}
+  .stepbtn:hover{background:#f0faf6}
+  .stepbtn:active{transform:translateY(1px)}
+  .tabs{display:flex;gap:4px;padding:0 16px;background:#fff;border-bottom:1px solid var(--line);overflow-x:auto;position:sticky;top:101px;z-index:14}
+  .tab{padding:11px 16px;font-size:13px;cursor:pointer;color:var(--sub);border-bottom:3px solid transparent;white-space:nowrap}
+  .tab.active{color:var(--brand);border-bottom-color:var(--brand);font-weight:700}
+  main{padding:18px 20px 60px;max-width:1180px;margin:0 auto}
+  .panel{display:none}
+  .panel.active{display:block}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .kpi .label{font-size:12px;color:var(--sub)}
+  .kpi .value{font-size:21px;font-weight:800;margin-top:4px;white-space:nowrap;letter-spacing:-.03em}
+  .kpi .sub{font-size:11px;color:var(--sub);margin-top:2px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:18px}
+  .card h2{font-size:14px;margin:0 0 12px;font-weight:700}
+  .card h2 .hint{font-size:11px;color:var(--sub);font-weight:400;margin-left:8px}
+  table{border-collapse:collapse;width:100%;font-size:12.5px}
+  th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  thead th{background:#f9fafb;color:#374151;font-weight:700;position:sticky;top:0;z-index:2}
+  .tblwrap{overflow:auto;max-height:62vh}
+  tbody tr:hover{background:#f8fafc}
+  tr.total{font-weight:800;background:#f1f5f9}
+  .rate-good{color:var(--good);font-weight:700}
+  .rate-bad{color:var(--bad);font-weight:700}
+  .chartwrap{position:relative;height:300px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:760px){.two{grid-template-columns:1fr}}
+  .muted{color:var(--sub);font-size:12px}
+  .note{background:#f1f6f4;border:1px solid var(--line);border-radius:10px;padding:10px 13px;font-size:12px;color:#4b6b62;margin-bottom:16px}
+  .note b{color:var(--ink)}
+  .loading{padding:60px;text-align:center;color:var(--sub)}
+  /* funnel */
+  .funnel{display:flex;flex-direction:column;gap:7px}
+  .fstage{display:grid;grid-template-columns:118px 1fr;align-items:center;gap:12px}
+  .fstage .fname{font-size:12.5px;color:#374151;text-align:right;font-weight:600}
+  .fbarwrap{position:relative;background:#f1f5f4;border-radius:8px;height:34px;overflow:hidden}
+  .fbar{height:100%;border-radius:8px;display:flex;align-items:center;padding-left:12px;color:#fff;font-size:12.5px;font-weight:700;white-space:nowrap;min-width:fit-content}
+  .fconv{font-size:11px;color:var(--sub);margin-left:8px}
+  #authGate{position:fixed;inset:0;background:#fcfdfc;display:flex;align-items:center;justify-content:center;z-index:9999;padding:24px;overflow:hidden}
+  #authGate::before{content:"";position:absolute;width:560px;height:560px;border-radius:50%;background:radial-gradient(circle,rgba(16,185,129,.07),transparent 70%);top:-240px;right:-170px}
+  #authGate::after{content:"";position:absolute;width:460px;height:460px;border-radius:50%;background:radial-gradient(circle,rgba(52,211,153,.06),transparent 70%);bottom:-220px;left:-170px}
+  .auth-card{position:relative;width:100%;max-width:344px;text-align:left}
+  .auth-logo-mark{width:54px;height:54px;border-radius:16px;background:linear-gradient(135deg,#10b981,#34d399);display:flex;align-items:center;justify-content:center;margin:0 0 30px;box-shadow:0 12px 26px rgba(16,185,129,.30);color:#fff;font-size:30px;font-weight:800}
+  .auth-title{font-size:27px;font-weight:800;color:#16241f;letter-spacing:-.01em;line-height:1.32}
+  .auth-tag{font-size:12.5px;color:#9aa8a1;margin-top:12px;line-height:1.6}
+  .auth-divider{height:1px;background:#eef1f0;margin:30px 0 24px}
+  .auth-lock{display:inline-flex;align-items:center;gap:6px;background:#f1f6f4;color:#5d7068;border-radius:999px;padding:6px 13px;font-size:11px;font-weight:700;margin-top:18px}
+  #loginBtn{display:flex;align-items:center;justify-content:center;gap:11px;background:#fff;color:#3c4043;border:1px solid #e5e9e7;border-radius:13px;padding:14px 18px;font-size:14.5px;font-weight:700;cursor:pointer;width:100%;transition:box-shadow .15s,border-color .15s,transform .05s}
+  #loginBtn:hover{border-color:#cbd5d0;box-shadow:0 6px 18px rgba(16,185,129,.12)}
+  #loginBtn:active{transform:translateY(1px)}
+  .auth-error{font-size:12.5px;color:#e11d48;margin-top:14px;min-height:1em}
+  .auth-foot{position:absolute;bottom:20px;left:0;right:0;text-align:center;color:#c3cdc8;font-size:11px;letter-spacing:.06em}
+</style>
+</head>
+<body>
+<div id="authGate">
+  <div class="auth-card">
+    <div class="auth-logo-mark">G</div>
+    <div class="auth-title">GROP（本社）<br>採用分析</div>
+    <div class="auth-tag">Indeed応募〜書類通過〜内定のファネル分析</div>
+    <div class="auth-divider"></div>
+    <button id="loginBtn">
+      <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      Google でログイン
+    </button>
+    <span class="auth-lock">🔒 社内（@link-core.co.jp）限定</span>
+    <p id="authError" class="auth-error"></p>
+  </div>
+  <div class="auth-foot">Powered by Link Core</div>
+</div>
+<header>
+  <h1>GROP（本社） 採用分析ダッシュボード</h1>
+  <span class="powered">Powered by Link Core</span>
+  <span class="updated" id="updated"></span>
+  <button id="refreshBtn">最新情報へ更新</button>
+  <button id="logoutBtn" title="ログアウト">ログアウト</button>
+</header>
 
-var SHEET_ID = '1Y3eKKIY_I9aJg8xFlRiAhBaA9HHVlJ-VJd_519fhnJ0'; // GROP（本社）indeed
-var GITHUB_REPO = 'lc-rm/grop-dashboard';
-var GITHUB_PATH = 'data.json';
+<div class="controls">
+  <div class="ctl-group"><span class="ctl-label">期間</span><span id="periodChips"></span></div>
+  <span class="muted" id="scopeNote"></span>
+</div>
 
-// ===== データ集計（個人情報なし）=====
-function buildData() {
-  var ss = SpreadsheetApp.openById(SHEET_ID);
-  var out = {
-    meta: { source: 'GROP（本社）Indeed / 人事管理用', generatedFrom: 'AppsScript', fetchedAt: new Date().toISOString() },
-    funnel: [], cost: [], media: [], applicants: []
-  };
+<div class="tabs" id="tabs"></div>
 
-  // --- 1) 書類通過（Indeed 月別ファネル）。①の最初の表だけ（最初の「合計/平均」で打切り）。応募0は除外 ---
-  var f = vals(ss, '書類通過');
-  for (var i = 1; i < f.length; i++) {
-    var r = f[i];
-    if (t(r[10]) === '合計/平均') break;
-    var ym = toYm(r[10]); if (!ym) continue;
-    if (n(r[11]) === 0) continue;
-    out.funnel.push({
-      ym: ym, applied: n(r[11]), arrived: n(r[12]), arrRate: rate(r[13]),
-      pass1: n(r[14]), p1Rate: rate(r[15]), pass2: n(r[16]), p2Rate: rate(r[17]),
-      offer: n(r[18]), offerRate: rate(r[19]), accept: n(r[20]), accRate: rate(r[21])
+<main>
+  <div id="content" class="loading">データを読み込み中…</div>
+</main>
+
+<script>
+const TABS = ['概要','書類通過','月別','職種別','求人別','オフィス別','年代別','媒体比較','広告コスト'];
+const DRILL_DIMS = [['office','オフィス'],['posting','求人'],['job','職種'],['ym','月'],['age','年代']];
+const RANGE_PRESETS = [
+  {key:'cur', label:'当月'},
+  {key:'prev', label:'前月'},
+  {key:'all', label:'全期間'},
+  {key:'12m', label:'直近12ヶ月'},
+  {key:'6m',  label:'直近6ヶ月'},
+  {key:'3m',  label:'直近3ヶ月'},
+];
+const STAGE_COLORS = ['#0ea882','#22b58d','#3cc79b','#7dd3a8','#b6a04e','#d97706'];
+
+let DATA=null, charts=[];
+const state = { tab:'概要', preset:'all', from:null, to:null, monthSel:null, pvRow:'office', pvCol:'ym', pvMetric:'applied', offSel:null };
+
+// ---------- helpers ----------
+const fmt = n => (n==null||isNaN(n))?'–':Math.round(n).toLocaleString('ja-JP');
+const yen = n => (n==null||isNaN(n))?'–':'¥'+Math.round(n).toLocaleString('ja-JP');
+const pct = r => (r==null||isNaN(r))?'–':(r*100).toFixed(1)+'%';
+const ymLabel = ym => ym ? ym.slice(0,4)+'/'+ym.slice(4,6) : '';
+function rateClass(r, good, bad){ if(r==null) return ''; if(r>=good) return 'rate-good'; if(r<bad) return 'rate-bad'; return ''; }
+function destroyCharts(){ charts.forEach(c=>{try{c.destroy()}catch(e){}}); charts=[]; }
+function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
+
+// 期間（開始月〜終了月）で絞る
+function allYms(){
+  const s=new Set();
+  (DATA.funnel||[]).forEach(r=>s.add(r.ym));
+  (DATA.cost||[]).forEach(r=>r.ym&&s.add(r.ym));
+  return [...s].sort();
+}
+function setPreset(key){
+  const ys=allYms(); if(!ys.length) return;
+  state.preset=key;
+  if(key==='all'){ state.from=ys[0]; state.to=ys[ys.length-1]; return; }
+  if(key==='cur'){ state.from=ys[ys.length-1]; state.to=ys[ys.length-1]; return; }
+  if(key==='prev'){ const i=Math.max(0,ys.length-2); state.from=ys[i]; state.to=ys[i]; return; }
+  const n={'12m':12,'6m':6,'3m':3}[key]||ys.length;
+  const sub=ys.slice(-n); state.from=sub[0]; state.to=ys[ys.length-1];
+}
+function inRange(ym){ return ym && state.from && ym>=state.from && ym<=state.to; }
+function shiftRange(delta){
+  const ys=allYms(); const i=ys.indexOf(state.from), j=ys.indexOf(state.to);
+  if(i<0||j<0) return;
+  if(i+delta<0||j+delta>ys.length-1) return; // 端を越えない
+  state.from=ys[i+delta]; state.to=ys[j+delta]; state.preset='';
+}
+function funnelRows(){ return DATA.funnel.filter(r=>inRange(r.ym)); }
+function applicantRows(){ return DATA.applicants.filter(r=>inRange(r.ym)); }
+function costRows(){ return (DATA.cost||[]).filter(r=>inRange(r.ym)); }
+function sumF(rows, k){ return rows.reduce((s,r)=>s+(r[k]||0),0); }
+
+// ---------- KPI ----------
+function kpiCard(label,value,sub){ return `<div class="kpi"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub||''}</div></div>`; }
+
+// ---------- 概要 ----------
+function renderOverview(){
+  const rows=funnelRows();
+  const applied=sumF(rows,'applied'), arrived=sumF(rows,'arrived'), p1=sumF(rows,'pass1'),
+        p2=sumF(rows,'pass2'), offer=sumF(rows,'offer'), accept=sumF(rows,'accept');
+  const kpis = `<div class="kpis">
+    ${kpiCard('応募数',fmt(applied),'Indeed・選択期間')}
+    ${kpiCard('書類到着',fmt(arrived),'到着率 '+pct(arrived/applied))}
+    ${kpiCard('書類選考①通過',fmt(p1),'通過率 '+pct(p1/applied))}
+    ${kpiCard('書類選考②通過',fmt(p2),'対①通過 '+pct(p2/p1))}
+    ${kpiCard('内定',fmt(offer),'内定率(対応募) '+pct(offer/applied))}
+    ${kpiCard('承諾',fmt(accept),'')}
+  </div>`;
+  const c = el(`<div>${kpis}
+    <div class="card"><h2>選考ファネル<span class="hint">応募 → 書類到着 → 書類①通過 → 書類②通過 → 内定 → 承諾</span></h2>
+      <div id="ovFunnel" class="funnel"></div></div>
+    <div class="card"><h2>月別 応募・到着・①通過 推移</h2><div class="chartwrap"><canvas id="ovTrend"></canvas></div></div>
+    <div class="card"><h2>通過率の推移<span class="hint">到着率・書類①通過率・内定率</span></h2><div class="chartwrap"><canvas id="ovRate"></canvas></div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  drawFunnel('ovFunnel', [
+    ['応募',applied],['書類到着',arrived],['書類①通過',p1],['書類②通過',p2],['内定',offer],['承諾',accept]
+  ]);
+  const labels=rows.map(r=>ymLabel(r.ym));
+  charts.push(new Chart(document.getElementById('ovTrend'),{type:'bar',
+    data:{labels,datasets:[
+      {label:'応募',data:rows.map(r=>r.applied),backgroundColor:'#cfeee3'},
+      {label:'書類到着',data:rows.map(r=>r.arrived),backgroundColor:'#6cc6a3'},
+      {label:'書類①通過',data:rows.map(r=>r.pass1),backgroundColor:'#0e9c74'},
+    ]},options:baseOpt()}));
+  charts.push(new Chart(document.getElementById('ovRate'),{type:'line',
+    data:{labels,datasets:[
+      {label:'書類到着率',data:rows.map(r=>r.arrRate==null?null:r.arrRate*100),borderColor:'#3fa3d9',tension:.3},
+      {label:'書類①通過率',data:rows.map(r=>r.p1Rate==null?null:r.p1Rate*100),borderColor:'#0e9c74',tension:.3},
+      {label:'内定率',data:rows.map(r=>r.offerRate==null?null:r.offerRate*100),borderColor:'#d97706',tension:.3},
+    ]},options:baseOpt('%')}));
+}
+
+function drawFunnel(id, stages){
+  const max = stages[0][1]||1;
+  const wrap=document.getElementById(id);
+  wrap.replaceChildren(...stages.map((st,i)=>{
+    const [name,val]=st; const prev=i>0?stages[i-1][1]:null;
+    const w=Math.max((val/max)*100,2);
+    const conv=prev!=null&&prev>0?` <span class="fconv">${pct(val/prev)}</span>`:'';
+    return el(`<div class="fstage"><div class="fname">${name}</div>
+      <div class="fbarwrap"><div class="fbar" style="width:${w}%;background:${STAGE_COLORS[i]}">${fmt(val)}${conv}</div></div></div>`);
+  }));
+}
+
+// ---------- 書類通過（主役）----------
+function renderFunnel(){
+  const rows=funnelRows();
+  const applied=sumF(rows,'applied'), arrived=sumF(rows,'arrived'), p1=sumF(rows,'pass1'),
+        p2=sumF(rows,'pass2'), offer=sumF(rows,'offer'), accept=sumF(rows,'accept');
+  const c=el(`<div>
+    <div class="card"><h2>選考ファネル<span class="hint">選択期間の合計</span></h2><div id="fnFunnel" class="funnel"></div></div>
+    <div class="card"><h2>月別 書類通過テーブル</h2>
+      <div class="tblwrap">${funnelTable(rows,{applied,arrived,p1,p2,offer,accept})}</div></div>
+    <div class="two">
+      <div class="card"><h2>通過率トレンド</h2><div class="chartwrap"><canvas id="fnRate"></canvas></div></div>
+      <div class="card"><h2>応募 → 到着 → ①通過 件数</h2><div class="chartwrap"><canvas id="fnCnt"></canvas></div></div>
+    </div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  drawFunnel('fnFunnel',[['応募',applied],['書類到着',arrived],['書類①通過',p1],['書類②通過',p2],['内定',offer],['承諾',accept]]);
+  const labels=rows.map(r=>ymLabel(r.ym));
+  charts.push(new Chart(document.getElementById('fnRate'),{type:'line',
+    data:{labels,datasets:[
+      {label:'書類到着率',data:rows.map(r=>r.arrRate==null?null:r.arrRate*100),borderColor:'#3fa3d9',tension:.3},
+      {label:'書類①通過率',data:rows.map(r=>r.p1Rate==null?null:r.p1Rate*100),borderColor:'#0e9c74',tension:.3},
+      {label:'書類②通過率',data:rows.map(r=>r.p2Rate==null?null:r.p2Rate*100),borderColor:'#b6883a',tension:.3},
+    ]},options:baseOpt('%')}));
+  charts.push(new Chart(document.getElementById('fnCnt'),{type:'bar',
+    data:{labels,datasets:[
+      {label:'応募',data:rows.map(r=>r.applied),backgroundColor:'#cfeee3'},
+      {label:'書類到着',data:rows.map(r=>r.arrived),backgroundColor:'#6cc6a3'},
+      {label:'書類①通過',data:rows.map(r=>r.pass1),backgroundColor:'#0e9c74'},
+    ]},options:baseOpt()}));
+}
+function funnelTable(rows,t){
+  const head=`<thead><tr><th>月</th><th>応募</th><th>到着</th><th>到着率</th><th>①通過</th><th>①通過率</th>
+    <th>②通過</th><th>②通過率</th><th>内定</th><th>内定率</th><th>承諾</th></tr></thead>`;
+  const body=rows.map(r=>`<tr><td>${ymLabel(r.ym)}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td>
+    <td class="${rateClass(r.arrRate,.55,.4)}">${pct(r.arrRate)}</td>
+    <td>${fmt(r.pass1)}</td><td class="${rateClass(r.p1Rate,.18,.1)}">${pct(r.p1Rate)}</td>
+    <td>${fmt(r.pass2)}</td><td>${pct(r.p2Rate)}</td>
+    <td>${fmt(r.offer)}</td><td>${pct(r.offerRate)}</td><td>${fmt(r.accept)}</td></tr>`).join('');
+  const total=`<tr class="total"><td>合計/平均</td><td>${fmt(t.applied)}</td><td>${fmt(t.arrived)}</td>
+    <td>${pct(t.arrived/t.applied)}</td><td>${fmt(t.p1)}</td><td>${pct(t.p1/t.applied)}</td>
+    <td>${fmt(t.p2)}</td><td>${pct(t.p2/t.p1)}</td><td>${fmt(t.offer)}</td><td>${pct(t.offer/t.applied)}</td><td>${fmt(t.accept)}</td></tr>`;
+  return `<table>${head}<tbody>${body}${total}</tbody></table>`;
+}
+
+// ---------- 月別（単月深掘り）----------
+function renderMonth(){
+  const ys=DATA.funnel.map(r=>r.ym);
+  if(!state.monthSel || ys.indexOf(state.monthSel)<0) state.monthSel=ys[ys.length-1];
+  const ym=state.monthSel;
+  const fr=DATA.funnel.find(r=>r.ym===ym)||{};
+  const apps=DATA.applicants.filter(r=>r.ym===ym);
+  const opts=ys.slice().reverse().map(y=>`<option value="${y}" ${y===ym?'selected':''}>${ymLabel(y)}</option>`).join('');
+  const kpis=`<div class="kpis">
+    ${kpiCard('応募数',fmt(fr.applied),'')}
+    ${kpiCard('書類到着',fmt(fr.arrived),'到着率 '+pct(fr.arrRate))}
+    ${kpiCard('書類①通過',fmt(fr.pass1),'通過率 '+pct(fr.p1Rate))}
+    ${kpiCard('書類②通過',fmt(fr.pass2),'対①通過 '+pct(fr.pass1?fr.pass2/fr.pass1:null))}
+    ${kpiCard('内定',fmt(fr.offer),'内定率 '+pct(fr.offerRate))}
+    ${kpiCard('承諾',fmt(fr.accept),'')}
+  </div>`;
+  const c=el(`<div>
+    <div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span style="font-weight:700">対象月</span>
+      <span class="stepbtn" id="moPrev" title="前の月">◀</span>
+      <select id="monthSel" class="msel">${opts}</select>
+      <span class="stepbtn" id="moNext" title="次の月">▶</span>
+      <span class="muted">この月の応募〜選考を深掘り（上部の期間指定とは独立）</span>
+    </div>
+    ${kpis}
+    <div class="card"><h2>${ymLabel(ym)} の選考ファネル</h2><div id="moFunnel" class="funnel"></div></div>
+    <div class="card"><h2>月別推移の中での位置づけ<span class="hint">応募・①通過（選択月をハイライト）</span></h2><div class="chartwrap"><canvas id="moTrend"></canvas></div></div>
+    <div class="two">
+      <div class="card"><h2>${ymLabel(ym)} 職種別 応募（上位10）</h2><div class="chartwrap" style="height:${Math.max(220,Math.min(10,aggBy(apps,'job').length)*26+60)}px"><canvas id="moJob"></canvas></div></div>
+      <div class="card"><h2>${ymLabel(ym)} 年代別 応募</h2><div class="chartwrap"><canvas id="moAge"></canvas></div></div>
+    </div>
+    <div class="card"><h2>${ymLabel(ym)} オフィス／勤務地別 ファネル</h2><div class="tblwrap">${dimTable(aggBy(apps,'office').slice(0,30),'オフィス／勤務地')}</div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  document.getElementById('monthSel').onchange=e=>{ state.monthSel=e.target.value; render(); };
+  document.getElementById('moPrev').onclick=()=>{ const i=ys.indexOf(state.monthSel); if(i>0){ state.monthSel=ys[i-1]; render(); } };
+  document.getElementById('moNext').onclick=()=>{ const i=ys.indexOf(state.monthSel); if(i<ys.length-1){ state.monthSel=ys[i+1]; render(); } };
+  drawFunnel('moFunnel',[['応募',fr.applied||0],['書類到着',fr.arrived||0],['書類①通過',fr.pass1||0],['書類②通過',fr.pass2||0],['内定',fr.offer||0],['承諾',fr.accept||0]]);
+  const labels=DATA.funnel.map(r=>ymLabel(r.ym));
+  charts.push(new Chart(document.getElementById('moTrend'),{type:'bar',
+    data:{labels,datasets:[
+      {label:'応募',data:DATA.funnel.map(r=>r.applied),backgroundColor:DATA.funnel.map(r=>r.ym===ym?'#0e9c74':'#dcebe5')},
+      {label:'書類①通過',data:DATA.funnel.map(r=>r.pass1),backgroundColor:DATA.funnel.map(r=>r.ym===ym?'#b6883a':'#ece3cd')},
+    ]},options:baseOpt()}));
+  const jb=aggBy(apps,'job').slice(0,10);
+  charts.push(new Chart(document.getElementById('moJob'),{type:'bar',
+    data:{labels:jb.map(r=>r.k),datasets:[{label:'応募',data:jb.map(r=>r.applied),backgroundColor:'#6cc6a3'}]},
+    options:Object.assign(baseOpt(),{indexAxis:'y',plugins:{legend:{display:false}},scales:{y:{ticks:{autoSkip:false,font:{size:11}}}}})}));
+  const order=['10代','20代','30代','40代','50代','60代','70代'];
+  const ab=aggBy(apps.filter(r=>r.age),'age').sort((a,b)=>order.indexOf(a.k)-order.indexOf(b.k));
+  charts.push(new Chart(document.getElementById('moAge'),{type:'doughnut',
+    data:{labels:ab.map(r=>r.k),datasets:[{data:ab.map(r=>r.applied),backgroundColor:['#b7e4cf','#6cc6a3','#0e9c74','#3fa3d9','#b6883a','#d97706','#9ca3af']}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right'}}}}));
+}
+
+// ---------- 媒体比較 ----------
+function renderMedia(){
+  const m=DATA.media;
+  const note=`<div class="note">媒体別の累計サマリー（「媒体比較」シートより）。期間フィルタは適用されません（媒体別は累計値のみ）。</div>`;
+  const head=`<thead><tr><th>媒体</th><th>応募</th><th>書類到着</th><th>到着率</th><th>①通過</th><th>①通過率</th><th>②通過</th><th>内定</th><th>内定率</th></tr></thead>`;
+  const body=m.map(r=>`<tr><td>${r.name}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td>
+    <td class="${rateClass(r.arrRate,.45,.35)}">${pct(r.arrRate)}</td><td>${fmt(r.pass1)}</td>
+    <td class="${rateClass(r.p1Rate,.18,.1)}">${pct(r.p1Rate)}</td><td>${fmt(r.pass2)}</td>
+    <td>${fmt(r.offer)}</td><td>${pct(r.offerRate)}</td></tr>`).join('');
+  const c=el(`<div>${note}
+    <div class="card"><h2>媒体別 到着率・①通過率</h2><div class="chartwrap"><canvas id="mdRate"></canvas></div></div>
+    <div class="card"><h2>媒体別サマリー</h2><div class="tblwrap"><table>${head}<tbody>${body}</tbody></table></div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  charts.push(new Chart(document.getElementById('mdRate'),{type:'bar',
+    data:{labels:m.map(r=>r.name),datasets:[
+      {label:'書類到着率',data:m.map(r=>r.arrRate*100),backgroundColor:'#6cc6a3'},
+      {label:'書類①通過率',data:m.map(r=>r.p1Rate*100),backgroundColor:'#0e9c74'},
+    ]},options:baseOpt('%')}));
+}
+
+// ---------- ディメンション集計（職種/オフィス/年代）----------
+function aggBy(rows,key){
+  const map=new Map();
+  rows.forEach(r=>{
+    const k=(r[key]||'(不明)')||'(不明)';
+    let o=map.get(k); if(!o){o={k,applied:0,arrived:0,pass1:0,pass2:0,offer:0};map.set(k,o);}
+    o.applied++; if(r.arrived)o.arrived++; if(r.pass1)o.pass1++; if(r.pass2)o.pass2++; if(r.offer)o.offer++;
+  });
+  return [...map.values()].sort((a,b)=>b.applied-a.applied);
+}
+function dimTable(arr,col1){
+  const head=`<thead><tr><th>${col1}</th><th>応募</th><th>到着</th><th>①通過</th><th>①通過率</th><th>②通過</th><th>内定</th></tr></thead>`;
+  const body=arr.map(r=>`<tr><td>${r.k}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td>
+    <td>${fmt(r.pass1)}</td><td class="${rateClass(r.pass1/r.applied,.18,.08)}">${pct(r.pass1/r.applied)}</td>
+    <td>${fmt(r.pass2)}</td><td>${fmt(r.offer)}</td></tr>`).join('');
+  return `<table>${head}<tbody>${body}</tbody></table>`;
+}
+function renderJob(){ renderDim('job','職種', 18); }
+function renderPosting(){ renderDim('posting','求人', 20); }
+
+// ---------- オフィス別（選択して詳細分析／複数で比較）----------
+// 市区名（○○市/○○区/○○町）と不明はオフィス表示から除外（正規オフィス名は末尾がオフィス/センター等で残る）
+function offHide(o){ return !o || o==='(不明)' || /[市区町村郡県府都]$/.test(o); }
+function monthlySeries(rows){
+  const m=new Map();
+  rows.forEach(r=>{ if(!r.ym)return; (m.get(r.ym)||m.set(r.ym,[]).get(r.ym)).push(r); });
+  return [...m.keys()].sort().map(ym=>Object.assign({ym},funnelCount(m.get(ym))));
+}
+function renderOffice(){
+  if(!state.offSel) state.offSel=[];
+  const rows=applicantRows();
+  const all=aggBy(rows,'office').filter(r=>!offHide(r.k));
+  const sel=state.offSel.filter(o=>all.some(a=>a.k===o));
+  state.offSel=sel;
+  const chips=sel.map(o=>`<span class="chip active" style="cursor:default">${o} <span data-rm="${encodeURIComponent(o)}" style="cursor:pointer;font-weight:800;margin-left:4px">×</span></span>`).join('');
+  const opts=['<option value="">＋ オフィスを追加…</option>'].concat(all.filter(a=>!sel.includes(a.k)).map(a=>`<option value="${encodeURIComponent(a.k)}">${a.k}（${a.applied}）</option>`)).join('');
+  const hint = sel.length===0?'オフィス名をクリック or 上で追加 → 詳細分析。複数選ぶと比較。':(sel.length===1?'単一オフィスの詳細分析（上で追加すると比較）':sel.length+'拠点を比較中');
+  const ctrl=`<div class="card" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <span style="font-weight:700">オフィス</span>
+    <select id="offAdd" class="msel" style="max-width:280px">${opts}</select>
+    ${chips}${sel.length?'<span class="chip" id="offClear" style="cursor:pointer">クリア</span>':''}
+    <span class="muted">${hint}</span></div>`;
+  const inner = sel.length===0?officeRanking(all):(sel.length===1?officeDetail(sel[0],rows):officeCompare(sel,rows));
+  document.getElementById('content').replaceChildren(el(`<div>${ctrl}${inner.html}</div>`));
+  const add=document.getElementById('offAdd'); if(add) add.onchange=e=>{ if(e.target.value){ state.offSel=[...sel,decodeURIComponent(e.target.value)]; render(); } };
+  const clr=document.getElementById('offClear'); if(clr) clr.onclick=()=>{ state.offSel=[]; render(); };
+  document.querySelectorAll('[data-rm]').forEach(x=>x.onclick=()=>{ state.offSel=sel.filter(o=>o!==decodeURIComponent(x.dataset.rm)); render(); });
+  document.querySelectorAll('[data-seloff]').forEach(tr=>tr.onclick=()=>{ state.offSel=[decodeURIComponent(tr.dataset.seloff)]; render(); });
+  if(inner.draw) inner.draw();
+}
+function officeRanking(all){
+  const top=all.slice(0,30);
+  const head=`<thead><tr><th>オフィス</th><th>応募</th><th>到着</th><th>①通過</th><th>①通過率</th><th>②通過</th><th>内定</th></tr></thead>`;
+  const body=all.map(r=>`<tr class="clickable" data-seloff="${encodeURIComponent(r.k)}"><td>${r.k}</td><td>${fmt(r.applied)}</td><td>${fmt(r.arrived)}</td><td>${fmt(r.pass1)}</td><td class="${rateClass(r.pass1/r.applied,.18,.08)}">${pct(r.pass1/r.applied)}</td><td>${fmt(r.pass2)}</td><td>${fmt(r.offer)}</td></tr>`).join('');
+  return {html:`<div class="card"><h2>オフィス別 応募数（上位30）<span class="hint">行クリックで詳細</span></h2><div class="chartwrap" style="height:${Math.max(260,top.length*22)}px"><canvas id="offBar"></canvas></div></div>
+    <div class="card"><h2>全オフィス ファネル（${all.length}拠点）<span class="hint">行クリックで深掘り</span></h2><div class="tblwrap"><table>${head}<tbody>${body}</tbody></table></div></div>`,
+    draw:()=>{ charts.push(new Chart(document.getElementById('offBar'),{type:'bar',data:{labels:top.map(r=>r.k),datasets:[{label:'応募',data:top.map(r=>r.applied),backgroundColor:'#cfeee3'},{label:'①通過',data:top.map(r=>r.pass1),backgroundColor:'#0e9c74'}]},options:Object.assign(baseOpt(),{indexAxis:'y',scales:{y:{ticks:{autoSkip:false,font:{size:11}}}}})})); } };
+}
+function officeDetail(office,rows){
+  const r=rows.filter(x=>x.office===office), c=funnelCount(r), ms=monthlySeries(r);
+  const jobs=aggBy(r,'job'), posts=aggBy(r,'posting');
+  const order=['10代','20代','30代','40代','50代','60代','70代'];
+  const ages=aggBy(r.filter(x=>x.age),'age').sort((a,b)=>order.indexOf(a.k)-order.indexOf(b.k));
+  const kpis=`<div class="kpis">
+    ${kpiCard('応募数',fmt(c.applied),office)}
+    ${kpiCard('書類到着',fmt(c.arrived),'到着率 '+pct(c.arrived/c.applied))}
+    ${kpiCard('書類①通過',fmt(c.pass1),'通過率 '+pct(c.pass1/c.applied))}
+    ${kpiCard('書類②通過',fmt(c.pass2),'')}
+    ${kpiCard('内定',fmt(c.offer),'内定率 '+pct(c.offer/c.applied))}</div>`;
+  return {html:`${kpis}
+    <div class="card"><h2>${office} の選考ファネル</h2><div id="offFunnel" class="funnel"></div></div>
+    <div class="card"><h2>月別 応募・①通過 推移</h2><div class="chartwrap"><canvas id="offTrend"></canvas></div></div>
+    <div class="two">
+      <div class="card"><h2>職種別 応募（上位10）</h2><div class="chartwrap"><canvas id="offJob"></canvas></div></div>
+      <div class="card"><h2>年代別 応募</h2><div class="chartwrap"><canvas id="offAge"></canvas></div></div></div>
+    <div class="card"><h2>求人別 ファネル</h2><div class="tblwrap">${dimTable(posts.slice(0,40),'求人')}</div></div>
+    <div class="card"><h2>職種別 ファネル</h2><div class="tblwrap">${dimTable(jobs.slice(0,40),'職種')}</div></div>`,
+    draw:()=>{
+      drawFunnel('offFunnel',[['応募',c.applied],['書類到着',c.arrived],['書類①通過',c.pass1],['書類②通過',c.pass2],['内定',c.offer]]);
+      charts.push(new Chart(document.getElementById('offTrend'),{type:'bar',data:{labels:ms.map(m=>ymLabel(m.ym)),datasets:[{label:'応募',data:ms.map(m=>m.applied),backgroundColor:'#cfeee3'},{label:'①通過',data:ms.map(m=>m.pass1),backgroundColor:'#0e9c74'}]},options:baseOpt()}));
+      const jb=jobs.slice(0,10);
+      charts.push(new Chart(document.getElementById('offJob'),{type:'bar',data:{labels:jb.map(r=>r.k),datasets:[{label:'応募',data:jb.map(r=>r.applied),backgroundColor:'#6cc6a3'}]},options:Object.assign(baseOpt(),{indexAxis:'y',plugins:{legend:{display:false}},scales:{y:{ticks:{autoSkip:false,font:{size:11}}}}})}));
+      charts.push(new Chart(document.getElementById('offAge'),{type:'doughnut',data:{labels:ages.map(r=>r.k),datasets:[{data:ages.map(r=>r.applied),backgroundColor:['#b7e4cf','#6cc6a3','#0e9c74','#3fa3d9','#b6883a','#d97706','#9ca3af']}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right'}}}})); } };
+}
+function officeCompare(sel,rows){
+  const data=sel.map(o=>{ const r=rows.filter(x=>x.office===o); return {k:o,c:funnelCount(r),ms:monthlySeries(r)}; });
+  const head=`<thead><tr><th>オフィス</th><th>応募</th><th>到着</th><th>到着率</th><th>①通過</th><th>①通過率</th><th>②通過</th><th>内定</th><th>内定率</th></tr></thead>`;
+  const body=data.map(d=>`<tr><td>${d.k}</td><td>${fmt(d.c.applied)}</td><td>${fmt(d.c.arrived)}</td><td>${pct(d.c.arrived/d.c.applied)}</td><td>${fmt(d.c.pass1)}</td><td class="${rateClass(d.c.pass1/d.c.applied,.18,.08)}">${pct(d.c.pass1/d.c.applied)}</td><td>${fmt(d.c.pass2)}</td><td>${fmt(d.c.offer)}</td><td>${pct(d.c.offer/d.c.applied)}</td></tr>`).join('');
+  const ys=[...new Set(data.flatMap(d=>d.ms.map(m=>m.ym)))].sort();
+  const PAL=['#0e9c74','#3fa3d9','#b6883a','#d97706','#9c6ade','#e85d75','#2bb0a3','#8aa029'];
+  return {html:`<div class="card"><h2>比較：応募数 と 到着率・①通過率</h2><div class="chartwrap"><canvas id="cmpBar"></canvas></div></div>
+    <div class="card"><h2>月別 応募数の比較</h2><div class="chartwrap"><canvas id="cmpTrend"></canvas></div></div>
+    <div class="card"><h2>比較テーブル</h2><div class="tblwrap"><table>${head}<tbody>${body}</tbody></table></div></div>`,
+    draw:()=>{
+      charts.push(new Chart(document.getElementById('cmpBar'),{data:{labels:data.map(d=>d.k),datasets:[
+        {type:'bar',label:'応募',data:data.map(d=>d.c.applied),backgroundColor:'#cfeee3',yAxisID:'y'},
+        {type:'line',label:'到着率%',data:data.map(d=>d.c.applied?d.c.arrived/d.c.applied*100:0),borderColor:'#3fa3d9',yAxisID:'y1'},
+        {type:'line',label:'①通過率%',data:data.map(d=>d.c.applied?d.c.pass1/d.c.applied*100:0),borderColor:'#0e9c74',yAxisID:'y1'}]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}},scales:{y:{position:'left',beginAtZero:true},y1:{position:'right',beginAtZero:true,grid:{display:false},ticks:{callback:v=>v+'%'}}}}}));
+      charts.push(new Chart(document.getElementById('cmpTrend'),{type:'line',data:{labels:ys.map(ymLabel),datasets:data.map((d,i)=>{ const mp=new Map(d.ms.map(m=>[m.ym,m.applied])); return {label:d.k,data:ys.map(y=>mp.get(y)||0),borderColor:PAL[i%PAL.length],backgroundColor:'transparent',tension:.3}; })},options:baseOpt()})); } };
+}
+function renderDim(key,title,topN){
+  const arr=aggBy(applicantRows(),key);
+  const top=arr.slice(0,topN);
+  const note=`<div class="note">「人事管理用」生データ（${fmt(applicantRows().length)}件）からの集計。職種名・オフィス名が空欄の行は応募求人名から推定。通過は各列の「通過」表記をカウント（内定はごく少数）。</div>`;
+  const c=el(`<div>${note}
+    <div class="card"><h2>${title}別 応募数（上位${topN}）</h2><div class="chartwrap" style="height:${Math.max(260,top.length*22)}px"><canvas id="dimBar"></canvas></div></div>
+    <div class="card"><h2>${title}別 ファネル<span class="hint">応募の多い順</span></h2><div class="tblwrap">${dimTable(arr.slice(0,60),title)}</div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  charts.push(new Chart(document.getElementById('dimBar'),{type:'bar',
+    data:{labels:top.map(r=>r.k),datasets:[
+      {label:'応募',data:top.map(r=>r.applied),backgroundColor:'#cfeee3'},
+      {label:'書類①通過',data:top.map(r=>r.pass1),backgroundColor:'#0e9c74'},
+    ]},options:Object.assign(baseOpt(),{indexAxis:'y',scales:{x:{stacked:false},y:{ticks:{autoSkip:false,font:{size:11}}}}})}));
+}
+
+// ---------- クロス集計（ピボットテーブル：行軸 × 列軸 × 指標）----------
+function dimVal(r,key){ const v=(key==='ym'?r.ym:r[key]); return (v==null||v==='')?'(不明)':v; }
+function funnelCount(rows){ const o={applied:rows.length,arrived:0,pass1:0,pass2:0,offer:0};
+  rows.forEach(r=>{ if(r.arrived)o.arrived++; if(r.pass1)o.pass1++; if(r.pass2)o.pass2++; if(r.offer)o.offer++; }); return o; }
+const CROSS_METRICS=[['applied','応募数'],['arrived','書類到着'],['pass1','①通過'],['pass2','②通過'],['offer','内定']];
+function renderCross(){
+  if(!state.pvRow) state.pvRow='office';
+  if(state.pvCol===undefined) state.pvCol='ym';
+  if(!state.pvMetric) state.pvMetric='applied';
+  const R=state.pvRow, C=state.pvCol, M=state.pvMetric;
+  let rows=applicantRows();
+  if(R==='office'||C==='office') rows=rows.filter(r=>!offHide(dimVal(r,'office')));
+  const cell = M==='applied' ? (_=>1) : (r=>r[M]?1:0);
+  const rowMap=new Map(), colTot=new Map();
+  rows.forEach(r=>{
+    const rk=dimVal(r,R), ck=C?dimVal(r,C):'計', v=cell(r);
+    if(!rowMap.has(rk)) rowMap.set(rk,{cells:new Map(),total:0});
+    const o=rowMap.get(rk); o.cells.set(ck,(o.cells.get(ck)||0)+v); o.total+=v;
+    colTot.set(ck,(colTot.get(ck)||0)+v);
+  });
+  let rowKeys=[...rowMap.keys()].sort((a,b)=>rowMap.get(b).total-rowMap.get(a).total);
+  const ROWCAP=150, rowTrunc=rowKeys.length>ROWCAP; rowKeys=rowKeys.slice(0,ROWCAP);
+  let colKeys=[...colTot.keys()];
+  colKeys.sort(C==='ym'?undefined:(a,b)=>colTot.get(b)-colTot.get(a));
+  const dispR=k=>R==='ym'&&k!=='(不明)'?ymLabel(k):k;
+  const dispC=k=>C==='ym'&&k!=='(不明)'?ymLabel(k):k;
+  const opt=(arr,sel,withNone)=>(withNone?[['','なし（合計のみ）']]:[]).concat(arr).map(([k,l])=>`<option value="${k}" ${k===sel?'selected':''}>${l}</option>`).join('');
+  let thead=`<tr><th>${DRILL_DIMS.find(d=>d[0]===R)[1]}</th>${C?colKeys.map(k=>`<th>${dispC(k)}</th>`).join(''):''}<th>合計</th></tr>`;
+  let body='';
+  rowKeys.forEach(rk=>{ const o=rowMap.get(rk);
+    body+=`<tr><td>${dispR(rk)}</td>${C?colKeys.map(k=>{const v=o.cells.get(k)||0;return `<td>${v?fmt(v):'<span style="color:#cfd8d3">·</span>'}</td>`;}).join(''):''}<td style="font-weight:700">${fmt(o.total)}</td></tr>`;
+  });
+  const grand=rowKeys.reduce((s,rk)=>s+rowMap.get(rk).total,0);
+  const totRow=`<tr class="total"><td>合計</td>${C?colKeys.map(k=>`<td>${fmt(colTot.get(k)||0)}</td>`).join(''):''}<td>${fmt(grand)}</td></tr>`;
+  const Rl=DRILL_DIMS.find(d=>d[0]===R)[1], Cl=C?DRILL_DIMS.find(d=>d[0]===C)[1]:'（列なし）', Ml=CROSS_METRICS.find(m=>m[0]===M)[1];
+  const c=el(`<div>
+    <div class="card" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="font-weight:700">行軸</span><select id="pvRow" class="msel">${opt(DRILL_DIMS,R,false)}</select>
+      <span style="font-weight:700;margin-left:6px">列軸</span><select id="pvCol" class="msel">${opt(DRILL_DIMS,C,true)}</select>
+      <span style="font-weight:700;margin-left:6px">指標</span><select id="pvMetric" class="msel">${opt(CROSS_METRICS,M,false)}</select>
+      <span class="muted">行×列のピボット集計。期間指定に連動。</span>
+    </div>
+    <div class="card"><h2>${Rl} × ${Cl}：${Ml}${rowTrunc?'<span class="hint">行は上位'+ROWCAP+'</span>':''}</h2>
+      <div class="tblwrap"><table><thead>${thead}</thead><tbody>${body}${totRow}</tbody></table></div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  document.getElementById('pvRow').onchange=e=>{ state.pvRow=e.target.value; if(state.pvCol===state.pvRow)state.pvCol=''; render(); };
+  document.getElementById('pvCol').onchange=e=>{ state.pvCol=e.target.value; render(); };
+  document.getElementById('pvMetric').onchange=e=>{ state.pvMetric=e.target.value; render(); };
+}
+
+// ---------- 年代別 ----------
+function renderAge(){
+  const rows=applicantRows().filter(r=>r.age);
+  const order=['10代','20代','30代','40代','50代','60代','70代'];
+  const arr=aggBy(rows,'age').sort((a,b)=>order.indexOf(a.k)-order.indexOf(b.k));
+  const note=`<div class="note">年齢が記載された応募（${fmt(rows.length)}件）の年代別内訳。年齢は10歳刻みの帯のみ保持（個人特定なし）。</div>`;
+  const c=el(`<div>${note}
+    <div class="two">
+      <div class="card"><h2>年代別 応募構成</h2><div class="chartwrap"><canvas id="ageDonut"></canvas></div></div>
+      <div class="card"><h2>年代別 ①通過率</h2><div class="chartwrap"><canvas id="ageRate"></canvas></div></div>
+    </div>
+    <div class="card"><h2>年代別 ファネル</h2><div class="tblwrap">${dimTable(arr,'年代')}</div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  charts.push(new Chart(document.getElementById('ageDonut'),{type:'doughnut',
+    data:{labels:arr.map(r=>r.k),datasets:[{data:arr.map(r=>r.applied),
+      backgroundColor:['#b7e4cf','#6cc6a3','#0e9c74','#3fa3d9','#b6883a','#d97706','#9ca3af']}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right'}}}}));
+  charts.push(new Chart(document.getElementById('ageRate'),{type:'bar',
+    data:{labels:arr.map(r=>r.k),datasets:[{label:'書類①通過率',data:arr.map(r=>r.applied?r.pass1/r.applied*100:0),backgroundColor:'#0e9c74'}]},
+    options:baseOpt('%')}));
+}
+
+// ---------- 広告コスト ----------
+function renderCost(){
+  const c0=costRows();
+  const note=`<div class="note">Indeed管理画面ベースの月別 <b>予算・消化額(COST)・応募(CV)・CPA</b>（「indeedデータ」シート）。上部の期間指定に連動します。
+    ※ 応募(CV)＝Indeed上の応募完了数で、書類通過タブの「応募者数」とは集計元が異なります。</div>`;
+  const tbud=c0.reduce((s,r)=>s+(r.budget||0),0), tcost=c0.reduce((s,r)=>s+(r.cost||0),0), tcv=c0.reduce((s,r)=>s+(r.cv||0),0);
+  const kpis=`<div class="kpis">
+    ${kpiCard('予算',yen(tbud),'選択期間の合計')}
+    ${kpiCard('消化額',yen(tcost),'消化率 '+pct(tbud?tcost/tbud:null))}
+    ${kpiCard('応募数(CV)',fmt(tcv),'Indeed応募完了')}
+    ${kpiCard('平均CPA',tcv?yen(tcost/tcv):'–','消化額/応募')}
+  </div>`;
+  const cpaCls=v=>v&&v<3000?'rate-good':(v&&v>8000?'rate-bad':'');
+  const head=`<thead><tr><th>月 / キャンペーン</th><th>予算</th><th>消化額</th><th>消化率</th><th>求人</th><th>表示</th><th>クリック</th><th>CTR</th><th>応募開始</th><th>CV</th><th>完了率</th><th>CPA</th></tr></thead>`;
+  let body='';
+  [...c0].reverse().forEach(r=>{
+    body+=`<tr class="total"><td>${ymLabel(r.ym)} 合計</td><td>${yen(r.budget)}</td><td>${yen(r.cost)}</td>
+      <td>${pct(r.budget?r.cost/r.budget:null)}</td><td>${r.jobs||'–'}</td><td>${fmt(r.imp)}</td><td>${fmt(r.click)}</td>
+      <td>${pct(r.ctr)}</td><td>${fmt(r.applyStart)}</td><td>${fmt(r.cv)}</td><td>${pct(r.cvr)}</td>
+      <td class="${cpaCls(r.cpa)}">${r.cpa?yen(r.cpa):'–'}</td></tr>`;
+    (r.campaigns||[]).forEach(cp=>{
+      body+=`<tr><td style="padding-left:22px">${cp.type}<span class="muted" style="font-size:11px"> ${cp.period||''}</span></td>
+        <td>${yen(cp.budget)}</td><td>${yen(cp.cost)}</td><td>${pct(cp.budget?cp.cost/cp.budget:null)}</td>
+        <td>${cp.jobs||'–'}</td><td>${fmt(cp.imp)}</td><td>${fmt(cp.click)}</td><td>${pct(cp.ctr)}</td>
+        <td>${fmt(cp.applyStart)}</td><td>${fmt(cp.cv)}</td><td>${pct(cp.cvr)}</td>
+        <td class="${cpaCls(cp.cpa)}">${cp.cpa?yen(cp.cpa):'–'}</td></tr>`;
     });
-  }
-  out.funnel.sort(function (a, b) { return a.ym < b.ym ? -1 : 1; });
-
-  // --- 2) indeedデータ(年度) — 月別 予算/消化/CPA 等 ---
-  // 各年度シートに月ブロック（ヘッダー行→「合計」行→キャンペーン明細）が縦に並ぶ。
-  var COST_COLS = ['imp', 'click', 'CTR', '応募開始数', 'CV', '応募完了率', 'CVR', 'CPC', 'CPA', 'COST', '予算残'];
-  var seenCost = {};
-  ['indeedデータ(2024年度)', 'indeedデータ(2025年度)', 'indeedデータ(2026年度)'].forEach(function (sname) {
-    var cv = vals(ss, sname); if (!cv.length) return;
-    for (var j = 0; j < cv.length; j++) {
-      var rr = cv[j];
-      if (!(rr && t(rr[0]) === 'indeed応募' && t(rr[1]) === '予算')) continue;
-      var idx = {};
-      for (var ci = 0; ci < rr.length; ci++) { if (COST_COLS.indexOf(rr[ci]) >= 0) idx[rr[ci]] = ci; }
-      var tot = cv[j + 1];
-      var ym = '';
-      var camps = [];
-      for (var k = j + 2; k < cv.length && !(cv[k] && t(cv[k][0]) === 'indeed応募'); k++) {
-        var cr = cv[k]; var nm = t(cr[0]);
-        if (!nm || nm === '合計') continue;
-        var pp = periodYm(cr[2]); if (pp && !ym) ym = pp;
-        var ggc = (function (row) { return function (key) { return idx[key] != null ? n(row[idx[key]]) : 0; }; })(cr);
-        var mt = nm.match(/_([^【]+)【/);
-        camps.push({
-          type: mt ? mt[1].replace(/\s/g, '') : nm, period: t(cr[2]),
-          budget: n(cr[1]), cost: ggc('COST'), jobs: cr[3] != null ? n(cr[3]) : 0,
-          imp: ggc('imp'), click: ggc('click'), ctr: rate(idx['CTR'] != null ? cr[idx['CTR']] : null),
-          applyStart: ggc('応募開始数'), cv: ggc('CV'), cvr: rate(idx['CVR'] != null ? cr[idx['CVR']] : null),
-          cpc: rate(idx['CPC'] != null ? cr[idx['CPC']] : null), cpa: rate(idx['CPA'] != null ? cr[idx['CPA']] : null)
-        });
-      }
-      if (tot && t(tot[0]) === '合計' && ym && !seenCost[ym]) {
-        seenCost[ym] = 1;
-        var gg = function (key) { return idx[key] != null ? n(tot[idx[key]]) : 0; };
-        out.cost.push({
-          ym: ym, budget: n(tot[1]), cost: gg('COST'), jobs: tot[3] != null ? n(tot[3]) : 0,
-          imp: gg('imp'), click: gg('click'),
-          ctr: rate(idx['CTR'] != null ? tot[idx['CTR']] : null), applyStart: gg('応募開始数'),
-          cv: gg('CV'), cvr: rate(idx['CVR'] != null ? tot[idx['CVR']] : null),
-          cpc: rate(idx['CPC'] != null ? tot[idx['CPC']] : null), cpa: rate(idx['CPA'] != null ? tot[idx['CPA']] : null),
-          budgetLeft: idx['予算残'] != null ? n(tot[idx['予算残']]) : null,
-          campaigns: camps
-        });
-      }
-    }
   });
-  out.cost.sort(function (a, b) { return a.ym < b.ym ? -1 : 1; });
-
-  // --- 3) 媒体比較（媒体別サマリー） ---
-  var m = vals(ss, '媒体比較');
-  var summary = {};
-  for (var k = 0; k < m.length; k++) {
-    if (t(m[k][0]) === '媒体' && t(m[k][1]).indexOf('到着率') >= 0) {
-      var p = k + 1;
-      while (p < m.length && t(m[p][0]) && m[p][1] !== '' && !isNaN(m[p][1])) {
-        summary[t(m[p][0])] = { arrRate: rate(m[p][1]), p1Rate: rate(m[p][2]), offer: n(m[p][3]), offerRate: rate(m[p][4]) };
-        p++;
-      }
-      break;
-    }
-  }
-  var indeed = {};
-  for (var a = 0; a < m.length; a++) {
-    if (t(m[a][0]) === '合計/平均' && m[a][1] !== '' && !isNaN(m[a][1])) {
-      indeed = { applied: n(m[a][1]), arrived: n(m[a][2]), pass1: n(m[a][4]), pass2: n(m[a][6]), offer: n(m[a][8]) };
-      break;
-    }
-  }
-  var right = [];
-  for (var b = 0; b < m.length; b++) {
-    if (t(m[b][11]) === '合計/平均') {
-      right.push({ applied: n(m[b][13]), arrived: n(m[b][14]), pass1: n(m[b][16]), pass2: n(m[b][18]), first: n(m[b][20]), offer: n(m[b][22]) });
-    }
-  }
-  var counts = { 'Indeed': indeed };
-  ['エン', 'DODA', 'マイナビ'].forEach(function (nm, idx) { if (right[idx]) counts[nm] = right[idx]; });
-  ['Indeed', 'エン', 'DODA', 'マイナビ'].forEach(function (nm) {
-    var cc = counts[nm] || {}, sm = summary[nm] || {};
-    out.media.push({
-      name: nm, applied: cc.applied || 0, arrived: cc.arrived || 0, pass1: cc.pass1 || 0,
-      pass2: cc.pass2 || 0, first: cc.first || 0, offer: cc.offer != null ? cc.offer : (sm.offer || 0),
-      arrRate: sm.arrRate, p1Rate: sm.p1Rate, offerRate: sm.offerRate
-    });
-  });
-
-  // --- 4) 人事管理用（非PII 応募者レコード） ---
-  // 列: 0応募日 3応募求人(=職種/勤務地) 4年齢 5職種名 6オフィス名 8書類到着日 9書類選考① 10書類選考② 11一次面接 13内定 14承諾
-  var h = vals(ss, '人事管理用');
-  // オフィス名寄せ器を先に構築（オフィス名 + 応募求人の勤務地を収集）
-  var offCands = {};
-  for (var pc = 2; pc < h.length; pc++) {
-    var oo = t(h[pc][6]);
-    if (!oo && t(h[pc][3])) { var pp = t(h[pc][3]).split('/'); if (pp.length > 1) oo = t(pp[pp.length - 1]); }
-    if (oo) offCands[oo] = 1;
-  }
-  var officeNorm = buildOfficeNorm(Object.keys(offCands));
-  for (var x = 2; x < h.length; x++) {
-    var rr = h[x];
-    if ((rr[0] === '' || rr[0] == null) && (rr[2] === '' || rr[2] == null)) continue;
-    var ym2 = toYm(rr[0]);
-    var appli = t(rr[3]), job = t(rr[5]), office = t(rr[6]), pref = '';
-    if (appli) {
-      var parts = appli.split('/');
-      if (!job) job = t(parts[0]);
-      if (parts.length > 1) pref = t(parts[parts.length - 1]);
-    }
-    if (!office) office = pref;
-    office = officeNorm(office);
-    var posting = appli || (job ? job + (office ? '/' + office : '') : '');
-    var ageband = '', ag = n(rr[4]);
-    if (ag > 15 && ag < 80) ageband = (Math.floor(ag / 10) * 10) + '代';
-    out.applicants.push({
-      ym: ym2 || '', job: job, posting: posting, office: office, pref: pref, age: ageband,
-      arrived: t(rr[8]) !== '', pass1: pass(rr[9]), pass2: pass(rr[10]),
-      first: pass(rr[11]) || t(rr[11]) === '実施', offer: offered(rr[13]) || offered(rr[14])
-    });
-  }
-
-  // meta
-  out.meta.applicantRecords = out.applicants.length;
-  out.meta.appliedTotalIndeed = out.funnel.reduce(function (s, r) { return s + r.applied; }, 0);
-  out.meta.offerTotalIndeed = out.funnel.reduce(function (s, r) { return s + r.offer; }, 0);
-  out.meta.latestFunnelYm = out.funnel.length ? out.funnel[out.funnel.length - 1].ym : '';
-  return out;
+  const c=el(`<div>${note}${kpis}
+    <div class="card"><h2>予算 vs 消化額 と 応募数(CV)</h2><div class="chartwrap"><canvas id="costChart"></canvas></div></div>
+    <div class="card"><h2>CPA（応募単価）の推移<span class="hint">低いほど効率が良い</span></h2><div class="chartwrap"><canvas id="cpaChart"></canvas></div></div>
+    <div class="card"><h2>月別・キャンペーン別 実績<span class="hint">各月の合計の下に求人キャンペーン（全体／注力 等）</span></h2><div class="tblwrap"><table>${head}<tbody>${body}</tbody></table></div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  const labels=c0.map(r=>ymLabel(r.ym));
+  charts.push(new Chart(document.getElementById('costChart'),{
+    data:{labels,datasets:[
+      {type:'bar',label:'予算',data:c0.map(r=>r.budget),backgroundColor:'#e2efe9',yAxisID:'y'},
+      {type:'bar',label:'消化額',data:c0.map(r=>r.cost),backgroundColor:'#6cc6a3',yAxisID:'y'},
+      {type:'line',label:'応募数(CV)',data:c0.map(r=>r.cv),borderColor:'#b6883a',yAxisID:'y1',tension:.3},
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}},
+      scales:{y:{position:'left',ticks:{callback:v=>'¥'+(v/10000)+'万'}},y1:{position:'right',grid:{display:false},beginAtZero:true}}}}));
+  charts.push(new Chart(document.getElementById('cpaChart'),{type:'line',
+    data:{labels,datasets:[{label:'CPA',data:c0.map(r=>r.cpa?Math.round(r.cpa):null),borderColor:'#0e9c74',backgroundColor:'rgba(14,156,116,.08)',fill:true,tension:.3}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{callback:v=>'¥'+fmt(v)}}}}}));
 }
 
-// ===== GitHubへ自動push（5分ごと）=====
-function autoPush() {
-  var props = PropertiesService.getScriptProperties();
-  var token = props.getProperty('GITHUB_TOKEN');
-  if (!token) { Logger.log('GITHUB_TOKEN が未設定です'); return; }
-  var json = JSON.stringify(buildData());
-  var hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, json));
-  if (props.getProperty('LAST_HASH') === hash) { Logger.log('変更なし → スキップ'); return; }
-
-  var base = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' + GITHUB_PATH;
-  var headers = { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
-  var sha = null;
-  var g = UrlFetchApp.fetch(base + '?ref=main', { headers: headers, muteHttpExceptions: true });
-  if (g.getResponseCode() === 200) sha = JSON.parse(g.getContentText()).sha;
-
-  var payload = { message: 'auto: update data.json ' + new Date().toISOString(),
-    content: Utilities.base64Encode(json, Utilities.Charset.UTF_8), branch: 'main' };
-  if (sha) payload.sha = sha;
-  var p = UrlFetchApp.fetch(base, { method: 'put', headers: headers, contentType: 'application/json',
-    payload: JSON.stringify(payload), muteHttpExceptions: true });
-  var code = p.getResponseCode();
-  if (code === 200 || code === 201) { props.setProperty('LAST_HASH', hash); Logger.log('更新成功 ' + code); }
-  else Logger.log('失敗 ' + code + ' ' + p.getContentText().slice(0, 300));
+// ---------- chart base ----------
+function baseOpt(unit){
+  return {responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{position:'bottom',labels:{font:{size:11},boxWidth:12}},
+      tooltip:{callbacks:{label:c=>c.dataset.label+': '+(unit==='%'?(c.parsed.y!=null?c.parsed.y.toFixed(1)+'%':'–'):fmt(c.parsed.y!=null?c.parsed.y:c.parsed.x))}}},
+    scales:{y:{beginAtZero:true,ticks:{callback:v=>unit==='%'?v+'%':fmt(v)}},x:{ticks:{font:{size:10}}}}};
 }
 
-// 5分ごとの自動更新を設定（1回だけ実行）
-function setupTrigger() {
-  ScriptApp.getProjectTriggers().forEach(function (tr) {
-    if (tr.getHandlerFunction() === 'autoPush') ScriptApp.deleteTrigger(tr);
-  });
-  ScriptApp.newTrigger('autoPush').timeBased().everyMinutes(5).create();
-  autoPush();
-  Logger.log('5分ごとの自動更新を設定しました');
+// ---------- shell ----------
+function renderTabs(){
+  const t=document.getElementById('tabs');
+  t.replaceChildren(...TABS.map(name=>{
+    const d=el(`<div class="tab ${name===state.tab?'active':''}">${name}</div>`);
+    d.onclick=()=>{ state.tab=name; renderTabs(); render(); };
+    return d;
+  }));
+}
+function renderPeriods(){
+  const ys=allYms();
+  const p=document.getElementById('periodChips');
+  const chips=RANGE_PRESETS.map(o=>`<span class="chip ${o.key===state.preset?'active':''}" data-k="${o.key}">${o.label}</span>`).join('');
+  const opts=ys.map(y=>`<option value="${y}">${ymLabel(y)}</option>`).join('');
+  p.innerHTML = chips +
+    `<span class="ctl-label" style="margin-left:8px">期間指定</span>`+
+    `<span class="stepbtn" id="prevMo" title="1ヶ月戻す">◀</span>`+
+    `<select id="fromSel" class="msel">${opts}</select>`+
+    `<span class="muted">〜</span>`+
+    `<select id="toSel" class="msel">${opts}</select>`+
+    `<span class="stepbtn" id="nextMo" title="1ヶ月進める">▶</span>`;
+  document.getElementById('fromSel').value=state.from;
+  document.getElementById('toSel').value=state.to;
+  p.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{ setPreset(c.dataset.k); renderPeriods(); render(); });
+  document.getElementById('prevMo').onclick=()=>{ shiftRange(-1); renderPeriods(); render(); };
+  document.getElementById('nextMo').onclick=()=>{ shiftRange(1); renderPeriods(); render(); };
+  document.getElementById('fromSel').onchange=e=>{ state.from=e.target.value; if(state.from>state.to)state.to=state.from; state.preset=''; renderPeriods(); render(); };
+  document.getElementById('toSel').onchange=e=>{ state.to=e.target.value; if(state.to<state.from)state.from=state.to; state.preset=''; renderPeriods(); render(); };
+}
+function render(){
+  destroyCharts();
+  const r=(state.tab==='広告コスト')?costRows():funnelRows();
+  document.getElementById('scopeNote').textContent =
+    (state.tab==='月別') ? '（月別タブは下の「対象月」で切替）' :
+    (state.tab==='媒体比較') ? '（媒体比較は累計値・期間指定の対象外）' :
+    r.length? `対象: ${ymLabel(r[0].ym)}〜${ymLabel(r[r.length-1].ym)}（${r.length}ヶ月）` : '該当データなし';
+  ({'概要':renderOverview,'書類通過':renderFunnel,'月別':renderMonth,
+    '職種別':renderJob,'求人別':renderPosting,'オフィス別':renderOffice,'年代別':renderAge,
+    '媒体比較':renderMedia,'広告コスト':renderCost}[state.tab])();
 }
 
-// ===== helpers =====
-function vals(ss, name) { var sh = ss.getSheetByName(name); return sh ? sh.getDataRange().getValues() : []; }
-function t(x) { return (x == null ? '' : String(x)).trim(); }
-function n(x) { if (x === '' || x == null) return 0; var v = (typeof x === 'number') ? x : parseFloat(String(x).replace(/[^0-9.\-]/g, '')); return isNaN(v) ? 0 : v; }
-function rate(x) { if (x === '' || x == null) return null; var v = (typeof x === 'number') ? x : parseFloat(String(x).replace(/[^0-9.\-]/g, '')); return isNaN(v) ? null : v; }
-function pass(x) { var s = t(x); return s.indexOf('通過') >= 0 && s.indexOf('不') < 0; }
-function offered(x) { var s = t(x); if (s.indexOf('不採用') >= 0) return false; return s.indexOf('採用') >= 0 || s.indexOf('内定') >= 0 || s.indexOf('入社') >= 0 || s.indexOf('承諾') >= 0; }
-function ymd(d) { var mm = ('0' + (d.getMonth() + 1)).slice(-2); return '' + d.getFullYear() + mm; }
-function periodYm(s) { var m = String(s == null ? '' : s).match(/(\d{4})\/(\d{1,2})/); return m ? m[1] + ('0' + m[2]).slice(-2) : ''; }
-var OFFICE_SUFFIX = ['サテライトオフィス', 'コンタクトセンター', 'オフィス', 'センター'];
-function buildOfficeNorm(names) {
-  var canon = {};
-  names.forEach(function (name) {
-    for (var i = 0; i < OFFICE_SUFFIX.length; i++) {
-      var suf = OFFICE_SUFFIX[i];
-      if (name.length > suf.length && name.slice(-suf.length) === suf) { canon[name.slice(0, -suf.length)] = name; break; }
-    }
-  });
-  var kws = Object.keys(canon).sort(function (a, b) { return b.length - a.length; });
-  return function (name) {
-    if (!name) return name;
-    for (var i = 0; i < OFFICE_SUFFIX.length; i++) { var suf = OFFICE_SUFFIX[i]; if (name.length >= suf.length && name.slice(-suf.length) === suf) return name; }
-    for (var j = 0; j < kws.length; j++) { if (name.indexOf(kws[j]) >= 0) return canon[kws[j]]; }
-    return name;
-  };
+// ---------- load ----------
+async function load(){
+  const res=await fetch('data.json?_='+Date.now());
+  if(!res.ok) throw new Error('data.json '+res.status);
+  DATA=await res.json();
+  const lf=DATA.meta&&DATA.meta.latestFunnelYm;
+  document.getElementById('updated').textContent='最新データ: '+(lf?ymLabel(lf):'—');
+  setPreset('all');
+  state.monthSel=allYms().slice(-1)[0]||null;
+  renderPeriods(); renderTabs(); render();
 }
-function toYm(v) {
-  if (v instanceof Date) return ymd(v);
-  var num = (typeof v === 'number') ? v : parseFloat(v);
-  if (!isNaN(num) && num > 190000) return String(Math.round(num));
-  return '';
-}
+document.getElementById('refreshBtn').onclick=async()=>{
+  const b=document.getElementById('refreshBtn'); b.textContent='更新中…'; b.disabled=true;
+  try{ await load(); }catch(e){ alert('更新に失敗しました: '+e.message); }
+  b.textContent='最新情報へ更新'; b.disabled=false;
+};
+document.getElementById('logoutBtn').onclick=()=>{ _auth.signOut(); location.reload(); };
+
+// ===== Firebase ログイン（@link-core.co.jp 限定・シードと同じプロジェクト/同一ドメイン）=====
+const firebaseConfig = {
+  apiKey: "AIzaSyA_pzdsr2K3mxpYskT7w24CVT1kysMjkJ0",
+  authDomain: "seed-dashboard-9afc3.firebaseapp.com",
+  projectId: "seed-dashboard-9afc3",
+  storageBucket: "seed-dashboard-9afc3.firebasestorage.app",
+  messagingSenderId: "232349675274",
+  appId: "1:232349675274:web:884bd146d2e61320a754f3"
+};
+const ALLOWED_DOMAIN='link-core.co.jp';
+firebase.initializeApp(firebaseConfig);
+const _auth=firebase.auth();
+const _provider=new firebase.auth.GoogleAuthProvider();
+_provider.setCustomParameters({hd:ALLOWED_DOMAIN,prompt:'select_account'});
+let _loaded=false;
+const _gate=document.getElementById('authGate'), _errEl=document.getElementById('authError');
+function showGate(msg){ _gate.style.display='flex'; if(msg!==undefined) _errEl.textContent=msg; }
+function hideGate(){ _gate.style.display='none'; }
+document.getElementById('loginBtn').onclick=()=>{ _errEl.textContent='';
+  _auth.signInWithPopup(_provider).catch(err=>{ showGate('ログインに失敗しました: '+((err&&err.message)||err)); }); };
+_auth.onAuthStateChanged(user=>{
+  if(user&&user.email&&user.email.toLowerCase().endsWith('@'+ALLOWED_DOMAIN)){
+    hideGate();
+    if(!_loaded){ _loaded=true; load().catch(e=>{ document.getElementById('content').innerHTML='<div class="loading">データの読み込みに失敗しました。<br>'+e.message+'</div>'; }); }
+  } else if(user){
+    showGate('@'+ALLOWED_DOMAIN+' のアカウントでログインしてください（'+user.email+' は対象外です）');
+    _auth.signOut();
+  } else { showGate(); }
+});
+</script>
+</body>
+</html>
