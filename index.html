@@ -641,7 +641,7 @@ async function load(){
   if(!res.ok) throw new Error('data.json '+res.status);
   DATA=await res.json();
   const lf=DATA.meta&&DATA.meta.latestFunnelYm, fa=DATA.meta&&DATA.meta.fetchedAt;
-  document.getElementById('updated').textContent='最新データ: '+(lf?ymLabel(lf):'—')+(fa?'　／　更新 '+fmtDateTime(fa):'');
+  document.getElementById('updated').textContent = fa ? '更新 '+fmtDateTime(fa) : (lf?'最新データ '+ymLabel(lf):'');
   setPreset('all');
   state.monthSel=allYms().slice(-1)[0]||null;
   renderPeriods(); renderTabs(); render();
