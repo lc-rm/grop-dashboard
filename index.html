@@ -227,7 +227,7 @@ function drawFunnel(id, stages){
   wrap.replaceChildren(...stages.map((st,i)=>{
     const [name,val]=st; const prev=i>0?stages[i-1][1]:null;
     const w=Math.max((val/max)*100,2);
-    const conv=(prev!=null&&prev>0&&val<=prev)?` <span class="fconv">${pct(val/prev)}</span>`:'';
+    const conv=(prev!=null&&prev>0)?` <span class="fconv">${pct(val/prev)}</span>`:'';
     return el(`<div class="fstage"><div class="fname">${name}</div>
       <div class="fbarwrap"><div class="fbar" style="width:${w}%;background:${STAGE_COLORS[i]}">${fmt(val)}${conv}</div></div></div>`);
   }));
