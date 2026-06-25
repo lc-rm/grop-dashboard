@@ -131,7 +131,7 @@ const RANGE_PRESETS = [
   {key:'6m',  label:'直近6ヶ月'},
   {key:'3m',  label:'直近3ヶ月'},
 ];
-const STAGE_COLORS = ['#0ea882','#22b58d','#3cc79b','#7dd3a8','#b6a04e','#d97706'];
+const STAGE_COLORS = ['#0ea882','#1cae87','#34bd92','#5fcaa1','#86d3ad','#b6a04e','#cf8a3a','#d97706'];
 
 let DATA=null, charts=[];
 const state = { tab:'概要', preset:'all', from:null, to:null, monthSel:null, pvRow:'office', pvCol:'ym', pvMetric:'applied', offSel:null };
@@ -191,15 +191,20 @@ function renderOverview(){
     ${kpiCard('内定',fmt(offer),'内定率(対応募) '+pct(offer/applied))}
     ${kpiCard('承諾',fmt(accept),'')}
   </div>`;
+  const ar=applicantRows();
+  const A={applied:ar.length, arrived:ar.filter(r=>r.arrived).length, pass1:ar.filter(r=>r.pass1).length,
+    pass2:ar.filter(r=>r.pass2).length, first:ar.filter(r=>r.first).length, second:ar.filter(r=>r.second).length,
+    offer:ar.filter(r=>r.offer).length, accept:ar.filter(r=>r.accept).length};
   const c = el(`<div>${kpis}
-    <div class="card"><h2>選考ファネル<span class="hint">応募 → 書類到着 → 書類①通過 → 書類②通過 → 内定 → 承諾</span></h2>
+    <div class="card"><h2>選考ファネル<span class="hint">応募→書類到着→書類①→書類②→一次面接→二次面接→内定→承諾（人事管理用ベース）</span></h2>
       <div id="ovFunnel" class="funnel"></div></div>
     <div class="card"><h2>月別 応募・到着・①通過 推移</h2><div class="chartwrap"><canvas id="ovTrend"></canvas></div></div>
     <div class="card"><h2>通過率の推移<span class="hint">到着率・書類①通過率・内定率</span></h2><div class="chartwrap"><canvas id="ovRate"></canvas></div></div>
   </div>`);
   document.getElementById('content').replaceChildren(c);
   drawFunnel('ovFunnel', [
-    ['応募',applied],['書類到着',arrived],['書類①通過',p1],['書類②通過',p2],['内定',offer],['承諾',accept]
+    ['応募',A.applied],['書類到着',A.arrived],['書類①通過',A.pass1],['書類②通過',A.pass2],
+    ['一次面接',A.first],['二次面接',A.second],['内定',A.offer],['承諾',A.accept]
   ]);
   const labels=rows.map(r=>ymLabel(r.ym));
   charts.push(new Chart(document.getElementById('ovTrend'),{type:'bar',
@@ -222,7 +227,7 @@ function drawFunnel(id, stages){
   wrap.replaceChildren(...stages.map((st,i)=>{
     const [name,val]=st; const prev=i>0?stages[i-1][1]:null;
     const w=Math.max((val/max)*100,2);
-    const conv=prev!=null&&prev>0?` <span class="fconv">${pct(val/prev)}</span>`:'';
+    const conv=(prev!=null&&prev>0&&val<=prev)?` <span class="fconv">${pct(val/prev)}</span>`:'';
     return el(`<div class="fstage"><div class="fname">${name}</div>
       <div class="fbarwrap"><div class="fbar" style="width:${w}%;background:${STAGE_COLORS[i]}">${fmt(val)}${conv}</div></div></div>`);
   }));
@@ -233,9 +238,15 @@ function renderFunnel(){
   const rows=funnelRows();
   const applied=sumF(rows,'applied'), arrived=sumF(rows,'arrived'), p1=sumF(rows,'pass1'),
         p2=sumF(rows,'pass2'), offer=sumF(rows,'offer'), accept=sumF(rows,'accept');
-  const c=el(`<div>
-    <div class="card"><h2>選考ファネル<span class="hint">選択期間の合計</span></h2><div id="fnFunnel" class="funnel"></div></div>
-    <div class="card"><h2>月別 書類通過テーブル</h2>
+  // 全選考段階のファネル図は「人事管理用」生データから（一次・二次面接を含む）
+  const ar=applicantRows();
+  const A={applied:ar.length, arrived:ar.filter(r=>r.arrived).length, pass1:ar.filter(r=>r.pass1).length,
+    pass2:ar.filter(r=>r.pass2).length, first:ar.filter(r=>r.first).length, second:ar.filter(r=>r.second).length,
+    offer:ar.filter(r=>r.offer).length, accept:ar.filter(r=>r.accept).length};
+  const note=`<div class="note">ファネル図は「人事管理用」の生データで<b>全選考段階（一次・二次面接を含む）</b>を表示。月別テーブル・推移グラフは「書類通過」シート（公式集計）。面接段は自由記述からの集計のため概算で、応募数も集計範囲の違いで両者は若干異なります。</div>`;
+  const c=el(`<div>${note}
+    <div class="card"><h2>選考ファネル<span class="hint">応募→書類到着→書類①→書類②→一次面接→二次面接→内定→承諾</span></h2><div id="fnFunnel" class="funnel"></div></div>
+    <div class="card"><h2>月別 書類通過テーブル<span class="hint">書類通過シート（公式）</span></h2>
       <div class="tblwrap">${funnelTable(rows,{applied,arrived,p1,p2,offer,accept})}</div></div>
     <div class="two">
       <div class="card"><h2>通過率トレンド</h2><div class="chartwrap"><canvas id="fnRate"></canvas></div></div>
@@ -243,7 +254,7 @@ function renderFunnel(){
     </div>
   </div>`);
   document.getElementById('content').replaceChildren(c);
-  drawFunnel('fnFunnel',[['応募',applied],['書類到着',arrived],['書類①通過',p1],['書類②通過',p2],['内定',offer],['承諾',accept]]);
+  drawFunnel('fnFunnel',[['応募',A.applied],['書類到着',A.arrived],['書類①通過',A.pass1],['書類②通過',A.pass2],['一次面接',A.first],['二次面接',A.second],['内定',A.offer],['承諾',A.accept]]);
   const labels=rows.map(r=>ymLabel(r.ym));
   charts.push(new Chart(document.getElementById('fnRate'),{type:'line',
     data:{labels,datasets:[
@@ -377,26 +388,24 @@ function monthlySeries(rows){
   return [...m.keys()].sort().map(ym=>Object.assign({ym},funnelCount(m.get(ym))));
 }
 function renderOffice(){
-  if(!state.offSel) state.offSel=[];
   const rows=applicantRows();
   const all=aggBy(rows,'office').filter(r=>!offHide(r.k));
-  const sel=state.offSel.filter(o=>all.some(a=>a.k===o));
+  let sel=(typeof state.offSel==='string')?state.offSel:null;
+  if(sel && !all.some(a=>a.k===sel)) sel=null;
   state.offSel=sel;
-  const chips=sel.map(o=>`<span class="chip active" style="cursor:default">${o} <span data-rm="${encodeURIComponent(o)}" style="cursor:pointer;font-weight:800;margin-left:4px">×</span></span>`).join('');
-  const opts=['<option value="">＋ オフィスを追加…</option>'].concat(all.filter(a=>!sel.includes(a.k)).map(a=>`<option value="${encodeURIComponent(a.k)}">${a.k}（${a.applied}）</option>`)).join('');
-  const hint = sel.length===0?'オフィス名をクリック or 上で追加 → 詳細分析。複数選ぶと比較。':(sel.length===1?'単一オフィスの詳細分析（上で追加すると比較）':sel.length+'拠点を比較中');
-  const ctrl=`<div class="card" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-    <span style="font-weight:700">オフィス</span>
-    <select id="offAdd" class="msel" style="max-width:280px">${opts}</select>
-    ${chips}${sel.length?'<span class="chip" id="offClear" style="cursor:pointer">クリア</span>':''}
-    <span class="muted">${hint}</span></div>`;
-  const inner = sel.length===0?officeRanking(all):(sel.length===1?officeDetail(sel[0],rows):officeCompare(sel,rows));
-  document.getElementById('content').replaceChildren(el(`<div>${ctrl}${inner.html}</div>`));
-  const add=document.getElementById('offAdd'); if(add) add.onchange=e=>{ if(e.target.value){ state.offSel=[...sel,decodeURIComponent(e.target.value)]; render(); } };
-  const clr=document.getElementById('offClear'); if(clr) clr.onclick=()=>{ state.offSel=[]; render(); };
-  document.querySelectorAll('[data-rm]').forEach(x=>x.onclick=()=>{ state.offSel=sel.filter(o=>o!==decodeURIComponent(x.dataset.rm)); render(); });
-  document.querySelectorAll('[data-seloff]').forEach(tr=>tr.onclick=()=>{ state.offSel=[decodeURIComponent(tr.dataset.seloff)]; render(); });
-  if(inner.draw) inner.draw();
+  if(!sel){
+    const inner=officeRanking(all);
+    document.getElementById('content').replaceChildren(el(`<div>${inner.html}</div>`));
+    document.querySelectorAll('[data-seloff]').forEach(tr=>tr.onclick=()=>{ state.offSel=decodeURIComponent(tr.dataset.seloff); render(); });
+    inner.draw();
+  } else {
+    const inner=officeDetail(sel,rows);
+    const back=`<div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="stepbtn" id="offBack">← オフィス一覧へ戻る</span><span style="font-weight:700;font-size:15px">${sel}</span></div>`;
+    document.getElementById('content').replaceChildren(el(`<div>${back}${inner.html}</div>`));
+    document.getElementById('offBack').onclick=()=>{ state.offSel=null; render(); };
+    inner.draw();
+  }
 }
 function officeRanking(all){
   const top=all.slice(0,30);
