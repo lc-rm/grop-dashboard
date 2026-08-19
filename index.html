@@ -122,7 +122,8 @@
 
 <script>
 const TABS = ['概要','書類通過','月別','職種別','求人別','オフィス別','年代別','媒体比較','広告コスト'];
-const DRILL_DIMS = [['office','オフィス'],['posting','求人'],['job','職種'],['ym','月'],['age','年代']];
+const DRILL_DIMS = [['office','オフィス'],['posting','求人'],['job','職種'],['ym','月'],['age','年代'],['media','媒体']];
+const MEDIA_ORDER = ['Airwork','エンゲージ','HP'];
 const RANGE_PRESETS = [
   {key:'cur', label:'当月'},
   {key:'prev', label:'前月'},
@@ -134,7 +135,31 @@ const RANGE_PRESETS = [
 const STAGE_COLORS = ['#0ea882','#1cae87','#34bd92','#5fcaa1','#86d3ad','#b6a04e','#cf8a3a','#d97706'];
 
 let DATA=null, charts=[];
-const state = { tab:'概要', preset:'all', from:null, to:null, monthSel:null, pvRow:'office', pvCol:'ym', pvMetric:'applied', offSel:null };
+const state = { tab:'概要', preset:'all', from:null, to:null, monthSel:null, monthMedia:null, pvRow:'office', pvCol:'ym', pvMetric:'applied', offSel:null };
+
+// ---------- media helpers ----------
+// 応募者データ(人事管理用)に付与された媒体の一覧（Airwork/エンゲージ/HP…）
+function distinctMedia(){
+  const s=new Set(); (DATA.applicants||[]).forEach(r=>{ if(r.media) s.add(r.media); });
+  return [...s].sort((a,b)=>{ const ia=MEDIA_ORDER.indexOf(a), ib=MEDIA_ORDER.indexOf(b);
+    return (ia<0?99:ia)-(ib<0?99:ib) || (a<b?-1:1); });
+}
+// 既定の選択：Airwork / エンゲージ を優先（無ければ存在する媒体すべて）
+function defaultMediaSel(){
+  const all=distinctMedia(); const pref=all.filter(m=>m==='Airwork'||m==='エンゲージ');
+  return pref.length?pref:all;
+}
+// 応募者行から8段の到達数を数える
+function stagesOf(rows){
+  return { applied:rows.length,
+    arrived:rows.filter(r=>r.arrived).length, pass1:rows.filter(r=>r.pass1).length,
+    pass2:rows.filter(r=>r.pass2).length, first:rows.filter(r=>r.first).length,
+    second:rows.filter(r=>r.second).length, offer:rows.filter(r=>r.offer).length,
+    accept:rows.filter(r=>r.accept).length };
+}
+const STAGE_DEFS = [['応募','applied'],['書類到着','arrived'],['書類①通過','pass1'],['書類②通過','pass2'],
+  ['一次面接','first'],['二次面接','second'],['内定','offer'],['承諾','accept']];
+const MEDIA_PAL = ['#0e9c74','#d97706','#3fa3d9','#9c6ade','#e85d75'];
 
 // ---------- helpers ----------
 const fmt = n => (n==null||isNaN(n))?'–':Math.round(n).toLocaleString('ja-JP');
@@ -227,7 +252,7 @@ function drawFunnel(id, stages){
   wrap.replaceChildren(...stages.map((st,i)=>{
     const [name,val]=st; const prev=i>0?stages[i-1][1]:null;
     const w=Math.max((val/max)*100,2);
-    const conv=(prev!=null&&prev>0)?` <span class="fconv">${pct(val/prev)}</span>`:'';
+    const conv=(i>0&&max>0)?` <span class="fconv">${pct(val/max)}</span>`:'';
     return el(`<div class="fstage"><div class="fname">${name}</div>
       <div class="fbarwrap"><div class="fbar" style="width:${w}%;background:${STAGE_COLORS[i]}">${fmt(val)}${conv}</div></div></div>`);
   }));
@@ -284,12 +309,40 @@ function funnelTable(rows,t){
 }
 
 // ---------- 月別（単月深掘り）----------
+// 当月の媒体別ファネル比較カード（AirWork / エンゲージ / … ＋ 合算）
+function monthMediaCardHtml(apps, media, sel){
+  const chips = media.length
+    ? media.map(m=>`<span class="chip ${sel.includes(m)?'active':''}" data-media="${encodeURIComponent(m)}">${m}</span>`).join('')
+    : '<span class="muted">この月に媒体タグ付きの応募はありません</span>';
+  let inner;
+  if(media.length && !sel.length){
+    inner=`<div class="muted" style="padding:6px 2px">媒体を1つ以上選択してください。</div>`;
+  } else if(!media.length){
+    inner='';
+  } else {
+    const byM={}; sel.forEach(m=>byM[m]=stagesOf(apps.filter(r=>r.media===m)));
+    const sum=stagesOf(apps.filter(r=>sel.includes(r.media)));
+    const head=`<thead><tr><th>選考段階</th>${sel.map(m=>`<th>${m}</th>`).join('')}<th>合算</th></tr></thead>`;
+    const body=STAGE_DEFS.map(([lbl,k])=>`<tr><td>${lbl}</td>${sel.map(m=>`<td>${fmt(byM[m][k])}</td>`).join('')}<td style="font-weight:800">${fmt(sum[k])}</td></tr>`).join('');
+    inner=`<div class="tblwrap" style="max-height:none"><table>${head}<tbody>${body}</tbody></table></div>
+      <div class="chartwrap" style="margin-top:14px"><canvas id="moMediaChart"></canvas></div>`;
+  }
+  return `<div class="card">
+    <h2>${ymLabel(state.monthSel)} 媒体別 選考ファネル<span class="hint">人事管理用ベース・応募者に付与された媒体で集計（AirWork / エンゲージ / 合算）</span></h2>
+    <div class="ctl-group" style="margin-bottom:12px"><span class="ctl-label">媒体（複数選択可）</span>${chips}</div>
+    ${inner}
+  </div>`;
+}
 function renderMonth(){
   const ys=DATA.funnel.map(r=>r.ym);
   if(!state.monthSel || ys.indexOf(state.monthSel)<0) state.monthSel=ys[ys.length-1];
   const ym=state.monthSel;
   const fr=DATA.funnel.find(r=>r.ym===ym)||{};
   const apps=DATA.applicants.filter(r=>r.ym===ym);
+  // 当月に存在する媒体と、現在の選択（stale除去）
+  const media=distinctMedia().filter(m=>apps.some(r=>r.media===m));
+  let sel=(state.monthMedia||defaultMediaSel()).filter(m=>media.includes(m));
+  const mediaCard=monthMediaCardHtml(apps, media, sel);
   const opts=ys.slice().reverse().map(y=>`<option value="${y}" ${y===ym?'selected':''}>${ymLabel(y)}</option>`).join('');
   const kpis=`<div class="kpis">
     ${kpiCard('応募数',fmt(fr.applied),'')}
@@ -308,7 +361,8 @@ function renderMonth(){
       <span class="muted">この月の応募〜選考を深掘り（上部の期間指定とは独立）</span>
     </div>
     ${kpis}
-    <div class="card"><h2>${ymLabel(ym)} の選考ファネル</h2><div id="moFunnel" class="funnel"></div></div>
+    ${mediaCard}
+    <div class="card"><h2>${ymLabel(ym)} の選考ファネル<span class="hint">全体（媒体を問わない）</span></h2><div id="moFunnel" class="funnel"></div></div>
     <div class="card"><h2>月別推移の中での位置づけ<span class="hint">応募・①通過（選択月をハイライト）</span></h2><div class="chartwrap"><canvas id="moTrend"></canvas></div></div>
     <div class="two">
       <div class="card"><h2>${ymLabel(ym)} 職種別 応募（上位10）</h2><div class="chartwrap" style="height:${Math.max(220,Math.min(10,aggBy(apps,'job').length)*26+60)}px"><canvas id="moJob"></canvas></div></div>
@@ -320,6 +374,20 @@ function renderMonth(){
   document.getElementById('monthSel').onchange=e=>{ state.monthSel=e.target.value; render(); };
   document.getElementById('moPrev').onclick=()=>{ const i=ys.indexOf(state.monthSel); if(i>0){ state.monthSel=ys[i-1]; render(); } };
   document.getElementById('moNext').onclick=()=>{ const i=ys.indexOf(state.monthSel); if(i<ys.length-1){ state.monthSel=ys[i+1]; render(); } };
+  // 媒体チップ（複数選択トグル）
+  document.querySelectorAll('[data-media]').forEach(ch=>ch.onclick=()=>{
+    const m=decodeURIComponent(ch.dataset.media);
+    let cur=(state.monthMedia||defaultMediaSel()).slice();
+    cur = cur.includes(m) ? cur.filter(x=>x!==m) : cur.concat([m]);
+    state.monthMedia=cur; render();
+  });
+  // 媒体別ファネル比較グラフ
+  if(sel.length){
+    const byM={}; sel.forEach(m=>byM[m]=stagesOf(apps.filter(r=>r.media===m)));
+    charts.push(new Chart(document.getElementById('moMediaChart'),{type:'bar',
+      data:{labels:STAGE_DEFS.map(s=>s[0]),datasets:sel.map((m,i)=>({label:m,data:STAGE_DEFS.map(([_,k])=>byM[m][k]),backgroundColor:MEDIA_PAL[i%MEDIA_PAL.length]}))},
+      options:baseOpt()}));
+  }
   drawFunnel('moFunnel',[['応募',fr.applied||0],['書類到着',fr.arrived||0],['書類①通過',fr.pass1||0],['書類②通過',fr.pass2||0],['内定',fr.offer||0],['承諾',fr.accept||0]]);
   const labels=DATA.funnel.map(r=>ymLabel(r.ym));
   charts.push(new Chart(document.getElementById('moTrend'),{type:'bar',
@@ -653,6 +721,7 @@ async function load(){
   document.getElementById('updated').textContent = fa ? '更新 '+fmtDateTime(fa) : (lf?'最新データ '+ymLabel(lf):'');
   setPreset('all');
   state.monthSel=allYms().slice(-1)[0]||null;
+  if(state.monthMedia===null) state.monthMedia=defaultMediaSel();
   renderPeriods(); renderTabs(); render();
 }
 document.getElementById('refreshBtn').onclick=async()=>{
