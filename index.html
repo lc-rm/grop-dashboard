@@ -177,6 +177,7 @@ function allYms(){
   const s=new Set();
   (DATA.funnel||[]).forEach(r=>s.add(r.ym));
   (DATA.cost||[]).forEach(r=>r.ym&&s.add(r.ym));
+  if(ENGAGE&&ENGAGE.months) Object.keys(ENGAGE.months).forEach(k=>s.add(k.replace('-','')));
   return [...s].sort();
 }
 function setPreset(key){
@@ -684,7 +685,7 @@ function renderEngage(){
       <td>${k.replace('-','/')}${isF?' ◀表示中':''}</td><td>${fmt(s.jobsTotal)}</td><td>${fmt(s.jobsPaid)}</td>
       <td>${fmt(s.pv)}</td><td>${fmt(s.applied)}</td><td>${pct(s.cvr)}</td><td>${yen(s.charge)}</td><td>${s.cpa?yen(s.cpa):'–'}</td></tr>`;
   }).join('');
-  const trendCard = all.length>1 ? `<div class="card"><h2>engage 月次推移<span class="hint">PV・応募・消化額（合算なし・月別）</span></h2><div class="chartwrap"><canvas id="engTrend"></canvas></div></div>` : '';
+  const trendCard = all.length>1 ? `<div class="card"><h2>engage 月次推移<span class="hint">PV・応募・CVR（月別・合算なし）</span></h2><div class="chartwrap"><canvas id="engTrend"></canvas></div></div>` : '';
   const monthlyCard=`<div class="card"><h2>engage 月次サマリ<span class="hint">保有月＝${all.map(k=>k.replace('-','/')).join(' / ')}。行クリックでその月に期間を合わせます</span></h2>
     <div class="tblwrap"><table>${sHead}<tbody>${sBody}</tbody></table></div></div>`;
 
@@ -699,6 +700,7 @@ function renderEngage(){
 
   // --- 注目月の詳細 ---
   const M=months[focus], S=M.summary, ai=S.ai||{}, demo=M.demographics||[];
+  const push=M.push||null, scout=push&&push.scout, offer=push&&push.offer;
   const kpis=`<div class="kpis">
     ${kpiCard('掲載求人',fmt(S.jobsTotal),'有料枠 '+fmt(S.jobsPaid)+'件')}
     ${kpiCard('閲覧数(PV)',fmt(S.pv),'')}
@@ -707,20 +709,35 @@ function renderEngage(){
     ${kpiCard('チャージ消化額',yen(S.charge),'')}
     ${kpiCard('応募単価(CPA)',S.cpa?yen(S.cpa):'–','消化額/応募')}
   </div>`;
-  const aiCard=`<div class="card"><h2>AIスカウト状況<span class="hint">プッシュ型アプローチ（送信→既読→応募）</span></h2>
-    <div class="kpis" style="margin-bottom:14px">
-      ${kpiCard('送信数',fmt(ai.sent),'判断 '+fmt(ai.judged))}
-      ${kpiCard('既読数',fmt(ai.read),'既読率 '+pct(ai.readRate))}
-      ${kpiCard('応募数',fmt(ai.applied),'応募率 '+pct(ai.applyRate))}
-      ${kpiCard('保留',fmt(ai.held),'条件不一致 '+fmt(ai.mismatch))}
-    </div>
-    <div class="chartwrap" style="height:220px"><canvas id="engAiFunnel"></canvas></div></div>`;
-  const demoCard = demo.length ? `<div class="card"><h2>応募者の年代・性別内訳<span class="hint">月次レポート本文より</span></h2>
+  const pushBlock=(title,sentLabel,o)=>{ if(!o) return '';
+    const rr=(o.sent&&o.read!=null)?o.read/o.sent:null, ar=(o.sent&&o.applied!=null)?o.applied/o.sent:null;
+    return `<div style="font-weight:700;font-size:12.5px;margin:2px 0 8px">${title}</div>
+      <div class="kpis" style="margin-bottom:14px">
+        ${kpiCard(sentLabel,fmt(o.sent),'')}
+        ${kpiCard('既読',o.read==null?'–':fmt(o.read),rr!=null?'既読率 '+pct(rr):'')}
+        ${kpiCard('応募',o.applied==null?'–':fmt(o.applied),ar!=null?'応募率 '+pct(ar):'')}
+      </div>`; };
+  const aiInner = (offer||scout)
+    ? (pushBlock('オファー配信','配信数',offer)+pushBlock('AIスカウト','送信数',scout))
+    : `<div class="kpis" style="margin-bottom:14px">
+        ${kpiCard('送信数',fmt(ai.sent),'判断 '+fmt(ai.judged))}
+        ${kpiCard('既読数',fmt(ai.read),'既読率 '+pct(ai.readRate))}
+        ${kpiCard('応募数',fmt(ai.applied),'応募率 '+pct(ai.applyRate))}
+        ${kpiCard('保留',fmt(ai.held),'条件不一致 '+fmt(ai.mismatch))}
+      </div>`;
+  const aiCard=`<div class="card"><h2>プッシュ施策（オファー配信・AIスカウト）<span class="hint">${(offer||scout)?'月次レポート本文より':'求人テーブル集計'}</span></h2>
+    ${aiInner}
+    <div class="chartwrap" style="height:200px"><canvas id="engAiFunnel"></canvas></div></div>`;
+  const gt=M.genderTotal||null;
+  const tMale = (gt&&gt.male!=null)?gt.male:demo.reduce((s,d)=>s+(d.male||0),0);
+  const tFemale=(gt&&gt.female!=null)?gt.female:demo.reduce((s,d)=>s+(d.female||0),0);
+  const bandSum=demo.reduce((s,d)=>s+d.total,0);
+  const demoCard = demo.length ? `<div class="card"><h2>応募者の年代・性別内訳<span class="hint">月次レポート本文より${gt?'（性別は全体値）':''}${bandSum<S.applied?'・内訳は主要年代のみ':''}</span></h2>
     <div class="two">
       <div class="chartwrap"><canvas id="engDemo"></canvas></div>
       <div class="tblwrap"><table><thead><tr><th>年代</th><th>男性</th><th>女性</th><th>計</th></tr></thead><tbody>
       ${demo.map(d=>`<tr><td>${d.band}</td><td>${d.male==null?'–':fmt(d.male)}</td><td>${d.female==null?'–':fmt(d.female)}</td><td style="font-weight:700">${fmt(d.total)}</td></tr>`).join('')}
-      <tr class="total"><td>計</td><td>${fmt(demo.reduce((s,d)=>s+(d.male||0),0))}</td><td>${fmt(demo.reduce((s,d)=>s+(d.female||0),0))}</td><td>${fmt(demo.reduce((s,d)=>s+d.total,0))}</td></tr>
+      <tr class="total"><td>計</td><td>${tMale?fmt(tMale):'–'}</td><td>${tFemale?fmt(tFemale):'–'}</td><td>${fmt(S.applied)}</td></tr>
       </tbody></table></div>
     </div></div>` : '';
   const cols=[{k:'job',l:'求人'},{k:'loc',l:'勤務地'},{k:'status',l:'ステータス'},{k:'pv',l:'PV'},{k:'applied',l:'応募'},{k:'cvr',l:'応募率'},{k:'charge',l:'消化額'},{k:'ai.sent',l:'AI送信'},{k:'ai.read',l:'AI既読'},{k:'ai.applied',l:'AI応募'}];
@@ -759,14 +776,19 @@ function renderEngage(){
       {label:'応募',data:top.map(j=>j.applied),backgroundColor:'#0e9c74',yAxisID:'y1'},
     ]},options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{position:'bottom'}},
       scales:{y:{stacked:false,ticks:{autoSkip:false,font:{size:11}}},x:{beginAtZero:true},y1:{display:false}}}}));
+  let funLabels, funData;
+  if(offer||scout){ const p=offer||scout; funLabels=[offer?'配信数':'送信数','既読','応募']; funData=[p.sent,p.read,p.applied]; }
+  else { funLabels=['判断','送信','既読','応募']; funData=[ai.judged,ai.sent,ai.read,ai.applied]; }
   charts.push(new Chart(document.getElementById('engAiFunnel'),{type:'bar',
-    data:{labels:['判断','送信','既読','応募'],datasets:[{label:'件数',data:[ai.judged,ai.sent,ai.read,ai.applied],backgroundColor:['#dcebe5','#6cc6a3','#3fa3d9','#0e9c74']}]},
+    data:{labels:funLabels,datasets:[{label:'件数',data:funData,backgroundColor:['#6cc6a3','#3fa3d9','#0e9c74','#d97706']}]},
     options:Object.assign(baseOpt(),{plugins:{legend:{display:false}}})}));
-  if(demo.length){ charts.push(new Chart(document.getElementById('engDemo'),{type:'bar',
-    data:{labels:demo.map(d=>d.band),datasets:[
-      {label:'男性',data:demo.map(d=>d.male||0),backgroundColor:'#3fa3d9'},
-      {label:'女性',data:demo.map(d=>d.female||0),backgroundColor:'#e85d9c'},
-    ]},options:Object.assign(baseOpt(),{scales:{x:{stacked:true},y:{stacked:true,beginAtZero:true}}})})); }
+  if(demo.length){ const hasBG=demo.some(d=>d.male!=null||d.female!=null);
+    const ds = hasBG
+      ? [{label:'男性',data:demo.map(d=>d.male||0),backgroundColor:'#3fa3d9'},{label:'女性',data:demo.map(d=>d.female||0),backgroundColor:'#e85d9c'}]
+      : [{label:'応募',data:demo.map(d=>d.total),backgroundColor:'#0e9c74'}];
+    charts.push(new Chart(document.getElementById('engDemo'),{type:'bar',
+      data:{labels:demo.map(d=>d.band),datasets:ds},
+      options:Object.assign(baseOpt(),{scales:{x:{stacked:hasBG},y:{stacked:hasBG,beginAtZero:true}}})})); }
 }
 function wireEngMonthly(){
   document.querySelectorAll('#content [data-engmo]').forEach(tr=>tr.onclick=()=>{
@@ -778,10 +800,13 @@ function drawEngTrend(all,months){
   const el2=document.getElementById('engTrend'); if(!el2) return;
   charts.push(new Chart(el2,{data:{labels:all.map(k=>k.replace('-','/')),datasets:[
     {type:'bar',label:'PV',data:all.map(k=>months[k].summary.pv),backgroundColor:'#cfeee3',yAxisID:'y'},
-    {type:'bar',label:'消化額',data:all.map(k=>months[k].summary.charge),backgroundColor:'#e2efe9',yAxisID:'y'},
-    {type:'line',label:'応募',data:all.map(k=>months[k].summary.applied),borderColor:'#0e9c74',yAxisID:'y1',tension:.3},
-  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}},
-    scales:{y:{position:'left',beginAtZero:true},y1:{position:'right',grid:{display:false},beginAtZero:true}}}}));
+    {type:'line',label:'応募',data:all.map(k=>months[k].summary.applied),borderColor:'#0e9c74',backgroundColor:'#0e9c74',yAxisID:'y1',tension:.3},
+    {type:'line',label:'CVR%',data:all.map(k=>months[k].summary.cvr==null?null:+(months[k].summary.cvr*100).toFixed(2)),borderColor:'#d97706',backgroundColor:'#d97706',yAxisID:'y2',tension:.3},
+  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'},
+    tooltip:{callbacks:{label:c=>c.dataset.label+': '+(c.dataset.label==='CVR%'?(c.parsed.y!=null?c.parsed.y+'%':'–'):fmt(c.parsed.y))}}},
+    scales:{y:{position:'left',beginAtZero:true,title:{display:true,text:'PV'}},
+      y1:{position:'right',grid:{display:false},beginAtZero:true,title:{display:true,text:'応募'}},
+      y2:{display:false,beginAtZero:true}}}}));
 }
 
 // ---------- chart base ----------
