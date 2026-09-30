@@ -121,7 +121,7 @@
 </main>
 
 <script>
-const TABS = ['概要','書類通過','月別','職種別','求人別','オフィス別','年代別','媒体比較','広告コスト'];
+const TABS = ['概要','書類通過','月別','職種別','求人別','オフィス別','年代別','媒体比較','広告コスト','engage'];
 const DRILL_DIMS = [['office','オフィス'],['posting','求人'],['job','職種'],['ym','月'],['age','年代'],['media','媒体']];
 const MEDIA_ORDER = ['Airwork','エンゲージ','HP'];
 const RANGE_PRESETS = [
@@ -134,8 +134,8 @@ const RANGE_PRESETS = [
 ];
 const STAGE_COLORS = ['#0ea882','#1cae87','#34bd92','#5fcaa1','#86d3ad','#b6a04e','#cf8a3a','#d97706'];
 
-let DATA=null, charts=[];
-const state = { tab:'概要', preset:'all', from:null, to:null, monthSel:null, monthMedia:null, pvRow:'office', pvCol:'ym', pvMetric:'applied', offSel:null };
+let DATA=null, ENGAGE=null, charts=[];
+const state = { tab:'概要', preset:'all', from:null, to:null, monthSel:null, monthMedia:null, pvRow:'office', pvCol:'ym', pvMetric:'applied', offSel:null, engSort:{key:'pv',dir:-1} };
 
 // ---------- media helpers ----------
 // 応募者データ(人事管理用)に付与された媒体の一覧（Airwork/エンゲージ/HP…）
@@ -663,6 +663,85 @@ function renderCost(){
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{callback:v=>'¥'+fmt(v)}}}}}));
 }
 
+// ---------- engage（circus 月次スナップショット）----------
+function engVal(j,key){ if(key==='loc') return (j.pref||'')+(j.city?' '+j.city:''); if(key.indexOf('.')>=0){ const [a,b]=key.split('.'); return (j[a]||{})[b]; } return j[key]; }
+function renderEngage(){
+  if(!ENGAGE){
+    document.getElementById('content').replaceChildren(el(`<div class="note">engageのデータ（engage.json）がまだありません。月次エクスポートを取り込むと表示されます。</div>`));
+    return;
+  }
+  const E=ENGAGE, S=E.summary, ai=S.ai||{}, demo=E.demographics||[];
+  const period=E.meta.period?E.meta.period.replace('-','/'):'';
+  const kpis=`<div class="kpis">
+    ${kpiCard('掲載求人',fmt(S.jobsTotal),'有料枠 '+fmt(S.jobsPaid)+'件')}
+    ${kpiCard('閲覧数(PV)',fmt(S.pv),'')}
+    ${kpiCard('応募数',fmt(S.applied),'')}
+    ${kpiCard('応募率(CVR)',pct(S.cvr),'業界水準 0.5〜1.0%')}
+    ${kpiCard('チャージ消化額',yen(S.charge),'')}
+    ${kpiCard('応募単価(CPA)',S.cpa?yen(S.cpa):'–','消化額/応募')}
+  </div>`;
+  const aiCard=`<div class="card"><h2>AIスカウト状況<span class="hint">プッシュ型アプローチ（送信→既読→応募）</span></h2>
+    <div class="kpis" style="margin-bottom:14px">
+      ${kpiCard('送信数',fmt(ai.sent),'判断 '+fmt(ai.judged))}
+      ${kpiCard('既読数',fmt(ai.read),'既読率 '+pct(ai.readRate))}
+      ${kpiCard('応募数',fmt(ai.applied),'応募率 '+pct(ai.applyRate))}
+      ${kpiCard('保留',fmt(ai.held),'条件不一致 '+fmt(ai.mismatch))}
+    </div>
+    <div class="chartwrap" style="height:220px"><canvas id="engAiFunnel"></canvas></div></div>`;
+  const demoCard = demo.length ? `<div class="card"><h2>応募者の年代・性別内訳<span class="hint">月次レポート本文より</span></h2>
+    <div class="two">
+      <div class="chartwrap"><canvas id="engDemo"></canvas></div>
+      <div class="tblwrap"><table><thead><tr><th>年代</th><th>男性</th><th>女性</th><th>計</th></tr></thead><tbody>
+      ${demo.map(d=>`<tr><td>${d.band}</td><td>${d.male==null?'–':fmt(d.male)}</td><td>${d.female==null?'–':fmt(d.female)}</td><td style="font-weight:700">${fmt(d.total)}</td></tr>`).join('')}
+      <tr class="total"><td>計</td><td>${fmt(demo.reduce((s,d)=>s+(d.male||0),0))}</td><td>${fmt(demo.reduce((s,d)=>s+(d.female||0),0))}</td><td>${fmt(demo.reduce((s,d)=>s+d.total,0))}</td></tr>
+      </tbody></table></div>
+    </div></div>` : '';
+  // 求人別テーブル（クリックでソート）
+  const cols=[{k:'job',l:'求人'},{k:'loc',l:'勤務地'},{k:'status',l:'ステータス'},{k:'pv',l:'PV',n:1},{k:'applied',l:'応募',n:1},{k:'cvr',l:'応募率',n:1,p:1},{k:'charge',l:'消化額',n:1,y:1},{k:'ai.sent',l:'AI送信',n:1},{k:'ai.read',l:'AI既読',n:1},{k:'ai.applied',l:'AI応募',n:1}];
+  const so=state.engSort;
+  const jobs=E.jobs.slice().sort((a,b)=>{ let x=engVal(a,so.key), y=engVal(b,so.key); if(typeof x==='string'||typeof y==='string'){ x=x||''; y=y||''; return so.dir*(x<y?-1:x>y?1:0); } return so.dir*((x||0)-(y||0)); });
+  const arrow=k=>so.key===k?(so.dir<0?' ▼':' ▲'):'';
+  const head=`<thead><tr>${cols.map(c=>`<th data-sort="${c.k}" style="cursor:pointer;user-select:none">${c.l}${arrow(c.k)}</th>`).join('')}</tr></thead>`;
+  const body=jobs.map(j=>{ const paid=('有料'===(j.status||'').slice(0,2)||j.charge>0);
+    return `<tr${paid?' style="background:#f0faf6"':''}>
+      <td title="${(j.job||'').replace(/"/g,'')}">${paid?'★ ':''}${(j.job||'').slice(0,26)}${(j.job||'').length>26?'…':''}</td>
+      <td>${engVal(j,'loc')}</td><td>${j.status||''}</td>
+      <td>${fmt(j.pv)}</td><td>${fmt(j.applied)}</td>
+      <td class="${rateClass(j.cvr,.01,.003)}">${pct(j.cvr)}</td>
+      <td>${yen(j.charge)}</td><td>${fmt(j.ai.sent)}</td><td>${fmt(j.ai.read)}</td><td>${fmt(j.ai.applied)}</td></tr>`;
+  }).join('');
+  const totRow=`<tr class="total"><td>合計（${fmt(E.jobs.length)}件）</td><td></td><td></td><td>${fmt(S.pv)}</td><td>${fmt(S.applied)}</td><td>${pct(S.cvr)}</td><td>${yen(S.charge)}</td><td>${fmt(ai.sent)}</td><td>${fmt(ai.read)}</td><td>${fmt(ai.applied)}</td></tr>`;
+  const note=`<div class="note"><b>engage（circus）運用実績</b> ${period?period+'度':''}　掲載${fmt(S.jobsTotal)}件（有料${fmt(S.jobsPaid)}）・PV ${fmt(S.pv)}・応募${fmt(S.applied)}・消化額${yen(S.charge)}。★＝有料掲載中。数値はエクスポート「${E.meta.source||''}」より（月次スナップショット）。</div>`;
+  const c=el(`<div>${note}${kpis}
+    <div class="two">
+      <div class="card"><h2>求人別 PV / 応募（上位15）</h2><div class="chartwrap" style="height:360px"><canvas id="engBar"></canvas></div></div>
+      ${aiCard}
+    </div>
+    ${demoCard}
+    <div class="card"><h2>求人別 効果一覧<span class="hint">見出しクリックで並び替え・★は有料掲載中</span></h2><div class="tblwrap">${`<table>${head}<tbody>${body}${totRow}</tbody></table>`}</div></div>
+  </div>`);
+  document.getElementById('content').replaceChildren(c);
+  document.querySelectorAll('#content [data-sort]').forEach(th=>th.onclick=()=>{ const k=th.dataset.sort; if(state.engSort.key===k){ state.engSort.dir*=-1; } else { state.engSort={key:k,dir: (k==='job'||k==='loc'||k==='status')?1:-1}; } render(); });
+  // 求人別バー（PV降順 上位15）
+  const top=E.jobs.slice().sort((a,b)=>b.pv-a.pv).slice(0,15);
+  charts.push(new Chart(document.getElementById('engBar'),{type:'bar',
+    data:{labels:top.map(j=>(j.city||j.pref||j.job||'').slice(0,10)),datasets:[
+      {label:'PV',data:top.map(j=>j.pv),backgroundColor:'#cfeee3',yAxisID:'y'},
+      {label:'応募',data:top.map(j=>j.applied),backgroundColor:'#0e9c74',yAxisID:'y1'},
+    ]},options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{position:'bottom'}},
+      scales:{y:{stacked:false,ticks:{autoSkip:false,font:{size:11}}},x:{beginAtZero:true},y1:{display:false}}}}));
+  // AIスカウト ファネル（送信→既読→応募）
+  charts.push(new Chart(document.getElementById('engAiFunnel'),{type:'bar',
+    data:{labels:['判断','送信','既読','応募'],datasets:[{label:'件数',data:[ai.judged,ai.sent,ai.read,ai.applied],backgroundColor:['#dcebe5','#6cc6a3','#3fa3d9','#0e9c74']}]},
+    options:Object.assign(baseOpt(),{plugins:{legend:{display:false}}})}));
+  // 年代・性別
+  if(demo.length){ charts.push(new Chart(document.getElementById('engDemo'),{type:'bar',
+    data:{labels:demo.map(d=>d.band),datasets:[
+      {label:'男性',data:demo.map(d=>d.male||0),backgroundColor:'#3fa3d9'},
+      {label:'女性',data:demo.map(d=>d.female||0),backgroundColor:'#e85d9c'},
+    ]},options:Object.assign(baseOpt(),{scales:{x:{stacked:true},y:{stacked:true,beginAtZero:true}}})})); }
+}
+
 // ---------- chart base ----------
 function baseOpt(unit){
   return {responsive:true,maintainAspectRatio:false,
@@ -706,10 +785,11 @@ function render(){
   document.getElementById('scopeNote').textContent =
     (state.tab==='月別') ? '（月別タブは下の「対象月」で切替）' :
     (state.tab==='媒体比較') ? '（媒体比較は累計値・期間指定の対象外）' :
+    (state.tab==='engage') ? '（engageは月次スナップショット・期間指定の対象外）' :
     r.length? `対象: ${ymLabel(r[0].ym)}〜${ymLabel(r[r.length-1].ym)}（${r.length}ヶ月）` : '該当データなし';
   ({'概要':renderOverview,'書類通過':renderFunnel,'月別':renderMonth,
     '職種別':renderJob,'求人別':renderPosting,'オフィス別':renderOffice,'年代別':renderAge,
-    '媒体比較':renderMedia,'広告コスト':renderCost}[state.tab])();
+    '媒体比較':renderMedia,'広告コスト':renderCost,'engage':renderEngage}[state.tab])();
 }
 
 // ---------- load ----------
@@ -717,6 +797,7 @@ async function load(){
   const res=await fetch('data.json?_='+Date.now());
   if(!res.ok) throw new Error('data.json '+res.status);
   DATA=await res.json();
+  try{ const er=await fetch('engage.json?_='+Date.now()); ENGAGE = er.ok ? await er.json() : null; }catch(e){ ENGAGE=null; }
   const lf=DATA.meta&&DATA.meta.latestFunnelYm, fa=DATA.meta&&DATA.meta.fetchedAt;
   document.getElementById('updated').textContent = fa ? '更新 '+fmtDateTime(fa) : (lf?'最新データ '+ymLabel(lf):'');
   setPreset('all');
