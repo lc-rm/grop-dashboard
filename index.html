@@ -663,15 +663,42 @@ function renderCost(){
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{callback:v=>'¥'+fmt(v)}}}}}));
 }
 
-// ---------- engage（circus 月次スナップショット）----------
+// ---------- engage（circus 月次・上部の期間指定に連動／合算しない）----------
 function engVal(j,key){ if(key==='loc') return (j.pref||'')+(j.city?' '+j.city:''); if(key.indexOf('.')>=0){ const [a,b]=key.split('.'); return (j[a]||{})[b]; } return j[key]; }
+function engAllMonths(){ return Object.keys((ENGAGE&&ENGAGE.months)||{}).sort(); }
+function engMonthsInRange(){ return engAllMonths().filter(k=>{ const ym=k.replace('-',''); return (!state.from||ym>=state.from)&&(!state.to||ym<=state.to); }); }
 function renderEngage(){
-  if(!ENGAGE){
-    document.getElementById('content').replaceChildren(el(`<div class="note">engageのデータ（engage.json）がまだありません。月次エクスポートを取り込むと表示されます。</div>`));
+  const months=(ENGAGE&&ENGAGE.months)||{};
+  const all=engAllMonths();
+  const cont=document.getElementById('content');
+  if(!all.length){
+    cont.replaceChildren(el(`<div class="note">engageのデータ（engage.json）がまだありません。月次エクスポートを取り込むと表示されます。</div>`));
     return;
   }
-  const E=ENGAGE, S=E.summary, ai=S.ai||{}, demo=E.demographics||[];
-  const period=E.meta.period?E.meta.period.replace('-','/'):'';
+  const inRange=engMonthsInRange();
+  const focus = inRange.length ? inRange[inRange.length-1] : null; // 期間内の最新月に注目（合算しない）
+  // --- 月次サマリ（保有月を1行ずつ。合算せず縦に並べる。行クリックでその月に期間を合わせる）---
+  const sHead=`<thead><tr><th>月</th><th>掲載</th><th>有料</th><th>PV</th><th>応募</th><th>応募率</th><th>消化額</th><th>CPA</th></tr></thead>`;
+  const sBody=all.map(k=>{ const s=months[k].summary; const on=inRange.includes(k); const isF=k===focus;
+    return `<tr data-engmo="${k}" style="cursor:pointer;${on?'':'opacity:.4'}${isF?';background:#eafaf3;font-weight:700':''}">
+      <td>${k.replace('-','/')}${isF?' ◀表示中':''}</td><td>${fmt(s.jobsTotal)}</td><td>${fmt(s.jobsPaid)}</td>
+      <td>${fmt(s.pv)}</td><td>${fmt(s.applied)}</td><td>${pct(s.cvr)}</td><td>${yen(s.charge)}</td><td>${s.cpa?yen(s.cpa):'–'}</td></tr>`;
+  }).join('');
+  const trendCard = all.length>1 ? `<div class="card"><h2>engage 月次推移<span class="hint">PV・応募・消化額（合算なし・月別）</span></h2><div class="chartwrap"><canvas id="engTrend"></canvas></div></div>` : '';
+  const monthlyCard=`<div class="card"><h2>engage 月次サマリ<span class="hint">保有月＝${all.map(k=>k.replace('-','/')).join(' / ')}。行クリックでその月に期間を合わせます</span></h2>
+    <div class="tblwrap"><table>${sHead}<tbody>${sBody}</tbody></table></div></div>`;
+
+  if(!focus){
+    cont.replaceChildren(el(`<div>
+      <div class="note">選択中の期間（${ymLabel(state.from)}〜${ymLabel(state.to)}）に engage データがありません。上部の期間指定を engage 保有月（${all.map(k=>k.replace('-','/')).join(' / ')}）に合わせるか、下の表の月をクリックしてください。</div>
+      ${trendCard}${monthlyCard}</div>`));
+    wireEngMonthly();
+    if(all.length>1) drawEngTrend(all,months);
+    return;
+  }
+
+  // --- 注目月の詳細 ---
+  const M=months[focus], S=M.summary, ai=S.ai||{}, demo=M.demographics||[];
   const kpis=`<div class="kpis">
     ${kpiCard('掲載求人',fmt(S.jobsTotal),'有料枠 '+fmt(S.jobsPaid)+'件')}
     ${kpiCard('閲覧数(PV)',fmt(S.pv),'')}
@@ -696,10 +723,9 @@ function renderEngage(){
       <tr class="total"><td>計</td><td>${fmt(demo.reduce((s,d)=>s+(d.male||0),0))}</td><td>${fmt(demo.reduce((s,d)=>s+(d.female||0),0))}</td><td>${fmt(demo.reduce((s,d)=>s+d.total,0))}</td></tr>
       </tbody></table></div>
     </div></div>` : '';
-  // 求人別テーブル（クリックでソート）
-  const cols=[{k:'job',l:'求人'},{k:'loc',l:'勤務地'},{k:'status',l:'ステータス'},{k:'pv',l:'PV',n:1},{k:'applied',l:'応募',n:1},{k:'cvr',l:'応募率',n:1,p:1},{k:'charge',l:'消化額',n:1,y:1},{k:'ai.sent',l:'AI送信',n:1},{k:'ai.read',l:'AI既読',n:1},{k:'ai.applied',l:'AI応募',n:1}];
+  const cols=[{k:'job',l:'求人'},{k:'loc',l:'勤務地'},{k:'status',l:'ステータス'},{k:'pv',l:'PV'},{k:'applied',l:'応募'},{k:'cvr',l:'応募率'},{k:'charge',l:'消化額'},{k:'ai.sent',l:'AI送信'},{k:'ai.read',l:'AI既読'},{k:'ai.applied',l:'AI応募'}];
   const so=state.engSort;
-  const jobs=E.jobs.slice().sort((a,b)=>{ let x=engVal(a,so.key), y=engVal(b,so.key); if(typeof x==='string'||typeof y==='string'){ x=x||''; y=y||''; return so.dir*(x<y?-1:x>y?1:0); } return so.dir*((x||0)-(y||0)); });
+  const jobs=M.jobs.slice().sort((a,b)=>{ let x=engVal(a,so.key), y=engVal(b,so.key); if(typeof x==='string'||typeof y==='string'){ x=x||''; y=y||''; return so.dir*(x<y?-1:x>y?1:0); } return so.dir*((x||0)-(y||0)); });
   const arrow=k=>so.key===k?(so.dir<0?' ▼':' ▲'):'';
   const head=`<thead><tr>${cols.map(c=>`<th data-sort="${c.k}" style="cursor:pointer;user-select:none">${c.l}${arrow(c.k)}</th>`).join('')}</tr></thead>`;
   const body=jobs.map(j=>{ const paid=('有料'===(j.status||'').slice(0,2)||j.charge>0);
@@ -710,36 +736,52 @@ function renderEngage(){
       <td class="${rateClass(j.cvr,.01,.003)}">${pct(j.cvr)}</td>
       <td>${yen(j.charge)}</td><td>${fmt(j.ai.sent)}</td><td>${fmt(j.ai.read)}</td><td>${fmt(j.ai.applied)}</td></tr>`;
   }).join('');
-  const totRow=`<tr class="total"><td>合計（${fmt(E.jobs.length)}件）</td><td></td><td></td><td>${fmt(S.pv)}</td><td>${fmt(S.applied)}</td><td>${pct(S.cvr)}</td><td>${yen(S.charge)}</td><td>${fmt(ai.sent)}</td><td>${fmt(ai.read)}</td><td>${fmt(ai.applied)}</td></tr>`;
-  const note=`<div class="note"><b>engage（circus）運用実績</b> ${period?period+'度':''}　掲載${fmt(S.jobsTotal)}件（有料${fmt(S.jobsPaid)}）・PV ${fmt(S.pv)}・応募${fmt(S.applied)}・消化額${yen(S.charge)}。★＝有料掲載中。数値はエクスポート「${E.meta.source||''}」より（月次スナップショット）。</div>`;
+  const totRow=`<tr class="total"><td>合計（${fmt(M.jobs.length)}件）</td><td></td><td></td><td>${fmt(S.pv)}</td><td>${fmt(S.applied)}</td><td>${pct(S.cvr)}</td><td>${yen(S.charge)}</td><td>${fmt(ai.sent)}</td><td>${fmt(ai.read)}</td><td>${fmt(ai.applied)}</td></tr>`;
+  const note=`<div class="note"><b>engage（circus）運用実績 ${focus.replace('-','/')}度</b>　掲載${fmt(S.jobsTotal)}件（有料${fmt(S.jobsPaid)}）・PV ${fmt(S.pv)}・応募${fmt(S.applied)}・消化額${yen(S.charge)}。★＝有料掲載中。数値はエクスポート「${M.source||''}」より（月別・合算なし）。${inRange.length>1?'※選択期間には複数月ありますが、詳細は最新月のみ表示（合算しません）。他の月は下表の行クリックで切替。':''}</div>`;
   const c=el(`<div>${note}${kpis}
+    ${trendCard}
+    ${monthlyCard}
     <div class="two">
-      <div class="card"><h2>求人別 PV / 応募（上位15）</h2><div class="chartwrap" style="height:360px"><canvas id="engBar"></canvas></div></div>
+      <div class="card"><h2>${focus.replace('-','/')} 求人別 PV / 応募（上位15）</h2><div class="chartwrap" style="height:360px"><canvas id="engBar"></canvas></div></div>
       ${aiCard}
     </div>
     ${demoCard}
-    <div class="card"><h2>求人別 効果一覧<span class="hint">見出しクリックで並び替え・★は有料掲載中</span></h2><div class="tblwrap">${`<table>${head}<tbody>${body}${totRow}</tbody></table>`}</div></div>
+    <div class="card"><h2>${focus.replace('-','/')} 求人別 効果一覧<span class="hint">見出しクリックで並び替え・★は有料掲載中</span></h2><div class="tblwrap">${`<table>${head}<tbody>${body}${totRow}</tbody></table>`}</div></div>
   </div>`);
-  document.getElementById('content').replaceChildren(c);
+  cont.replaceChildren(c);
+  wireEngMonthly();
   document.querySelectorAll('#content [data-sort]').forEach(th=>th.onclick=()=>{ const k=th.dataset.sort; if(state.engSort.key===k){ state.engSort.dir*=-1; } else { state.engSort={key:k,dir: (k==='job'||k==='loc'||k==='status')?1:-1}; } render(); });
-  // 求人別バー（PV降順 上位15）
-  const top=E.jobs.slice().sort((a,b)=>b.pv-a.pv).slice(0,15);
+  if(all.length>1) drawEngTrend(all,months);
+  const top=M.jobs.slice().sort((a,b)=>b.pv-a.pv).slice(0,15);
   charts.push(new Chart(document.getElementById('engBar'),{type:'bar',
     data:{labels:top.map(j=>(j.city||j.pref||j.job||'').slice(0,10)),datasets:[
       {label:'PV',data:top.map(j=>j.pv),backgroundColor:'#cfeee3',yAxisID:'y'},
       {label:'応募',data:top.map(j=>j.applied),backgroundColor:'#0e9c74',yAxisID:'y1'},
     ]},options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{position:'bottom'}},
       scales:{y:{stacked:false,ticks:{autoSkip:false,font:{size:11}}},x:{beginAtZero:true},y1:{display:false}}}}));
-  // AIスカウト ファネル（送信→既読→応募）
   charts.push(new Chart(document.getElementById('engAiFunnel'),{type:'bar',
     data:{labels:['判断','送信','既読','応募'],datasets:[{label:'件数',data:[ai.judged,ai.sent,ai.read,ai.applied],backgroundColor:['#dcebe5','#6cc6a3','#3fa3d9','#0e9c74']}]},
     options:Object.assign(baseOpt(),{plugins:{legend:{display:false}}})}));
-  // 年代・性別
   if(demo.length){ charts.push(new Chart(document.getElementById('engDemo'),{type:'bar',
     data:{labels:demo.map(d=>d.band),datasets:[
       {label:'男性',data:demo.map(d=>d.male||0),backgroundColor:'#3fa3d9'},
       {label:'女性',data:demo.map(d=>d.female||0),backgroundColor:'#e85d9c'},
     ]},options:Object.assign(baseOpt(),{scales:{x:{stacked:true},y:{stacked:true,beginAtZero:true}}})})); }
+}
+function wireEngMonthly(){
+  document.querySelectorAll('#content [data-engmo]').forEach(tr=>tr.onclick=()=>{
+    const ym=tr.dataset.engmo.replace('-',''); state.from=ym; state.to=ym; state.preset='';
+    renderPeriods(); render();
+  });
+}
+function drawEngTrend(all,months){
+  const el2=document.getElementById('engTrend'); if(!el2) return;
+  charts.push(new Chart(el2,{data:{labels:all.map(k=>k.replace('-','/')),datasets:[
+    {type:'bar',label:'PV',data:all.map(k=>months[k].summary.pv),backgroundColor:'#cfeee3',yAxisID:'y'},
+    {type:'bar',label:'消化額',data:all.map(k=>months[k].summary.charge),backgroundColor:'#e2efe9',yAxisID:'y'},
+    {type:'line',label:'応募',data:all.map(k=>months[k].summary.applied),borderColor:'#0e9c74',yAxisID:'y1',tension:.3},
+  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}},
+    scales:{y:{position:'left',beginAtZero:true},y1:{position:'right',grid:{display:false},beginAtZero:true}}}}));
 }
 
 // ---------- chart base ----------
@@ -785,7 +827,7 @@ function render(){
   document.getElementById('scopeNote').textContent =
     (state.tab==='月別') ? '（月別タブは下の「対象月」で切替）' :
     (state.tab==='媒体比較') ? '（媒体比較は累計値・期間指定の対象外）' :
-    (state.tab==='engage') ? '（engageは月次スナップショット・期間指定の対象外）' :
+    (state.tab==='engage') ? '（engageは上部の期間指定に連動・月別で表示／合算なし）' :
     r.length? `対象: ${ymLabel(r[0].ym)}〜${ymLabel(r[r.length-1].ym)}（${r.length}ヶ月）` : '該当データなし';
   ({'概要':renderOverview,'書類通過':renderFunnel,'月別':renderMonth,
     '職種別':renderJob,'求人別':renderPosting,'オフィス別':renderOffice,'年代別':renderAge,
