@@ -865,6 +865,11 @@ async function load(){
   if(!res.ok) throw new Error('data.json '+res.status);
   DATA=await res.json();
   try{ const er=await fetch('engage.json?_='+Date.now()); ENGAGE = er.ok ? await er.json() : null; }catch(e){ ENGAGE=null; }
+  // 広告コスト履歴（FY2024-2026＝旧年度シート由来。新年度移行で元シートが消えたため静的保持）をライブcostにマージ
+  try{ const ch=await fetch('cost_history.json?_='+Date.now());
+    if(ch.ok){ const h=await ch.json(); const have=new Set((DATA.cost||[]).map(r=>r.ym));
+      const hist=(h.cost||[]).filter(r=>!have.has(r.ym));
+      DATA.cost=hist.concat(DATA.cost||[]); DATA.cost.sort((a,b)=>a.ym<b.ym?-1:1); } }catch(e){}
   const lf=DATA.meta&&DATA.meta.latestFunnelYm, fa=DATA.meta&&DATA.meta.fetchedAt;
   document.getElementById('updated').textContent = fa ? '更新 '+fmtDateTime(fa) : (lf?'最新データ '+ymLabel(lf):'');
   setPreset('all');
