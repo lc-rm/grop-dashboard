@@ -96,14 +96,12 @@
       <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
       Google でログイン
     </button>
-    <span class="auth-lock">🔒 社内（@link-core.co.jp）限定</span>
+    <span class="auth-lock">🔒 関係者限定（@link-core.co.jp / @grop.co.jp）</span>
     <p id="authError" class="auth-error"></p>
   </div>
-  <div class="auth-foot">Powered by Link Core</div>
 </div>
 <header>
   <h1>GROP（本社） 採用分析ダッシュボード</h1>
-  <span class="powered">Powered by Link Core</span>
   <span class="updated" id="updated"></span>
   <button id="refreshBtn">最新情報へ更新</button>
   <button id="logoutBtn" title="ログアウト">ログアウト</button>
@@ -893,11 +891,12 @@ const firebaseConfig = {
   messagingSenderId: "232349675274",
   appId: "1:232349675274:web:884bd146d2e61320a754f3"
 };
-const ALLOWED_DOMAIN='link-core.co.jp';
+const ALLOWED_DOMAINS=['link-core.co.jp','grop.co.jp'];
+const okDomain=email=>!!email && ALLOWED_DOMAINS.some(d=>email.toLowerCase().endsWith('@'+d));
 firebase.initializeApp(firebaseConfig);
 const _auth=firebase.auth();
 const _provider=new firebase.auth.GoogleAuthProvider();
-_provider.setCustomParameters({hd:ALLOWED_DOMAIN,prompt:'select_account'});
+_provider.setCustomParameters({prompt:'select_account'});  // 複数ドメイン許可のため hd 制限はかけない
 let _loaded=false;
 const _gate=document.getElementById('authGate'), _errEl=document.getElementById('authError');
 function showGate(msg){ _gate.style.display='flex'; if(msg!==undefined) _errEl.textContent=msg; }
@@ -905,11 +904,11 @@ function hideGate(){ _gate.style.display='none'; }
 document.getElementById('loginBtn').onclick=()=>{ _errEl.textContent='';
   _auth.signInWithPopup(_provider).catch(err=>{ showGate('ログインに失敗しました: '+((err&&err.message)||err)); }); };
 _auth.onAuthStateChanged(user=>{
-  if(user&&user.email&&user.email.toLowerCase().endsWith('@'+ALLOWED_DOMAIN)){
+  if(user&&okDomain(user.email)){
     hideGate();
     if(!_loaded){ _loaded=true; load().catch(e=>{ document.getElementById('content').innerHTML='<div class="loading">データの読み込みに失敗しました。<br>'+e.message+'</div>'; }); }
   } else if(user){
-    showGate('@'+ALLOWED_DOMAIN+' のアカウントでログインしてください（'+user.email+' は対象外です）');
+    showGate('許可されたアカウント（'+ALLOWED_DOMAINS.map(d=>'@'+d).join(' / ')+'）でログインしてください（'+user.email+' は対象外です）');
     _auth.signOut();
   } else { showGate(); }
 });
